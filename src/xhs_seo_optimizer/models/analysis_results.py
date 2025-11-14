@@ -3,9 +3,13 @@
 Pydantic models for content analysis outputs from tools:
 - VisionAnalysisResult: Visual feature analysis from MultiModalVisionTool
 - TextAnalysisResult: Text feature analysis from NLPAnalysisTool
+- MetricStats: Statistical summary for a single metric
+- AggregatedMetrics: Aggregated statistics across multiple notes
+- Gap: Statistical gap analysis for a single metric
+- GapAnalysis: Complete gap analysis between owned and target notes
 """
 
-from typing import List, Optional
+from typing import List, Optional, Dict
 from pydantic import BaseModel, Field
 
 
@@ -118,3 +122,76 @@ class TextAnalysisResult(BaseModel):
         default=None,
         description="详细分析说明 (from LLM)"
     )
+
+
+class MetricStats(BaseModel):
+    """单个指标的统计摘要 (Statistical summary for a single metric).
+
+    Output from DataAggregatorTool for each prediction metric.
+    """
+
+    mean: float = Field(description="平均值 (Mean)")
+    median: float = Field(description="中位数 (Median)")
+    std: float = Field(description="标准差 (Standard deviation)")
+    min: float = Field(description="最小值 (Minimum)")
+    max: float = Field(description="最大值 (Maximum)")
+    count: int = Field(description="数据点数量 (Number of data points)")
+
+
+class AggregatedMetrics(BaseModel):
+    """跨多个笔记的聚合统计 (Aggregated statistics across multiple notes).
+
+    Output from DataAggregatorTool analyzing target_notes.
+    Used by CompetitorAnalyst to understand winning patterns.
+    """
+
+    prediction_stats: Dict[str, MetricStats] = Field(
+        description="每个预测指标的统计信息 (Statistics for each prediction metric)"
+    )
+    tag_frequencies: Dict[str, Dict[str, int]] = Field(
+        description="每个标签维度的频次统计 (Frequency counts for each tag dimension)"
+    )
+    tag_modes: Dict[str, str] = Field(
+        description="每个标签维度的众数 (Most common value for each tag dimension)"
+    )
+    sample_size: int = Field(description="分析的笔记数量 (Number of notes analyzed)")
+    outliers_removed: int = Field(description="移除的异常值数量 (Number of outliers excluded)")
+
+
+class Gap(BaseModel):
+    """单个指标的差距分析 (Statistical gap analysis for a single metric).
+
+    Represents the difference between owned_note and target_notes for one metric.
+    """
+
+    metric: str = Field(description="指标名称 (Metric name)")
+    owned_value: Optional[float] = Field(description="客户笔记的值 (Owned note value)")
+    target_mean: float = Field(description="目标笔记均值 (Target notes mean)")
+    target_std: float = Field(description="目标笔记标准差 (Target notes std dev)")
+    delta_absolute: float = Field(description="绝对差值 (Absolute difference)")
+    delta_pct: float = Field(description="百分比差值 (Percentage difference)")
+    z_score: float = Field(description="Z分数 (Z-score)")
+    p_value: float = Field(description="P值 (P-value)")
+    significance: str = Field(
+        description="显著性级别 (Significance level): critical | very_significant | significant | marginal | none | undefined"
+    )
+    interpretation: str = Field(description="人类可读的解释 (Human-readable interpretation)")
+
+
+class GapAnalysis(BaseModel):
+    """客户笔记与目标笔记间的差距分析 (Gap analysis between owned and target notes).
+
+    Output from StatisticalDeltaTool.
+    Used by GapFinder to prioritize optimization opportunities.
+    """
+
+    significant_gaps: List[Gap] = Field(
+        description="显著差距列表 (Gaps with p < α, sorted by priority)"
+    )
+    non_significant_gaps: List[Gap] = Field(
+        description="非显著差距列表 (Gaps with p >= α, for completeness)"
+    )
+    priority_order: List[str] = Field(
+        description="按优先级排序的指标名称 (Metric names sorted by priority)"
+    )
+    sample_size: int = Field(description="使用的目标笔记数量 (Number of target notes used)")
