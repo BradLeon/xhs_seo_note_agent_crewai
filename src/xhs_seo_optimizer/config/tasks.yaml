@@ -1,0 +1,58 @@
+# Task Configuration for XHS SEO Optimizer Multi-Agent System
+# 小红书SEO优化多智能体系统的Task配置
+#
+# This file defines the 5 tasks in the system:
+# 1. orchestrate_workflow - Manager task (placeholder for future)
+# 2. analyze_competitors - Analyze target_notes to identify success patterns
+# 3. audit_owned_note - Audit owned_note characteristics (placeholder)
+# 4. find_gaps - Identify gaps between owned and target notes (placeholder)
+# 5. generate_strategy - Generate optimization plan (placeholder)
+#
+# NOTE: Task context dependencies (which tasks depend on which) are configured
+# in Python code (crew.py @task methods), NOT in this YAML file.
+
+orchestrate_workflow:
+  description: |
+    协调整个分析流程:
+    1. 并行执行竞品分析和客户笔记诊断
+    2. 执行差距定位
+    3. 生成优化策略
+  expected_output: "完整的优化方案报告"
+  agent: orchestrator
+
+analyze_competitors:
+  description: |
+    分析target_notes在关键词'{keyword}'下的成功模式:
+    1. 使用DataAggregatorTool计算统计摘要
+    2. 使用NLPAnalysisTool和MultiModalVisionTool提取每个笔记的特征
+    3. 应用混合归因逻辑识别高相关性模式
+    4. 生成SuccessProfileReport，包含:
+       - 按特征类型组织的模式列表 (title, cover, content, tag)
+       - 每个模式的统计证据 (prevalence %, z-score, p-value)
+       - LLM生成的创作公式和执行要点
+  expected_output: "SuccessProfileReport (JSON格式)"
+  agent: competitor_analyst
+  output_file: "outputs/success_profile_report.json"
+  # Note: output_pydantic在crew.py的@task方法中配置，不在YAML中
+
+audit_owned_note:
+  description: |
+    深度分析客户笔记owned_note的内容特征和表现指标。
+  expected_output: "AuditReport (JSON格式)"
+  agent: owned_note_auditor
+
+find_gaps:
+  description: |
+    对比owned_note与target_notes的成功模式，识别差距。
+  expected_output: "GapReport (JSON格式)"
+  agent: gap_finder
+  # Note: context依赖在crew.py的@task方法中配置，不在YAML中
+  # This task depends on: analyze_competitors, audit_owned_note
+
+generate_strategy:
+  description: |
+    基于差距分析，生成具体的内容优化建议。
+  expected_output: "OptimizationPlan (JSON格式)"
+  agent: optimization_strategist
+  # Note: context依赖在crew.py的@task方法中配置，不在YAML中
+  # This task depends on: find_gaps
