@@ -9,6 +9,7 @@ from typing import Dict, List
 # Type alias for attribution rule
 AttributionRule = Dict[str, any]
 
+# TODO, 这个规则性的东西需要认真人工review遍。
 
 METRIC_FEATURE_ATTRIBUTION: Dict[str, AttributionRule] = {
     # CTR (Click-Through Rate) - 用户决定是否点击时只能看到标题和封面
