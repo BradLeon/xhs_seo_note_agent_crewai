@@ -27,7 +27,40 @@ from xhs_seo_optimizer.attribution import get_relevant_features, get_all_metrics
 logger = logging.getLogger(__name__)
 
 
-# === Task 3.2: Aggregate Statistics ===
+# ============================================================================
+# Configuration Constants
+# ============================================================================
+
+class AnalysisConfig:
+    """Configuration constants for pattern analysis.
+
+    All magic numbers are centralized here for easy maintenance and testing.
+    """
+
+    # Sample size thresholds
+    MIN_SAMPLE_SIZE = 3  # Minimum notes required for statistical validity
+
+    # Example collection limits
+    MAX_EXAMPLES_PER_PATTERN = 3  # Examples collected during pattern detection
+    MAX_EXAMPLES_SINGLE_PROMPT = 5  # Examples shown in single-pattern LLM prompts
+    MAX_EXAMPLES_BATCH_PROMPT = 3  # Examples shown in batch prompts (conserve context)
+
+    # Batch processing configuration
+    DEFAULT_BATCH_SIZE = 5  # Patterns processed per API call (balance cost vs context)
+
+    # Logging display limits
+    MAX_METRIC_VALUES_DISPLAY = 5  # Metric values shown in debug logs
+
+    # Summary generation parameters
+    TOP_PATTERNS_COUNT = 5  # Top patterns selected for ranking and summary
+    MIN_SUCCESS_FACTORS = 3  # Minimum key success factors in report
+    MAX_SUCCESS_FACTORS = 5  # Maximum key success factors in report
+    TOP_FEATURES_IN_SUMMARY = 3  # Features mentioned in viral formula summary
+
+
+# ============================================================================
+# Task 3.2: Aggregate Statistics
+# ============================================================================
 
 def aggregate_statistics(notes: List[Note]) -> AggregatedMetrics:
     """Calculate baseline statistics across all target notes.
@@ -51,7 +84,10 @@ def aggregate_statistics(notes: List[Note]) -> AggregatedMetrics:
 
     # Use DataAggregatorTool
     aggregator = DataAggregatorTool()
-    result = aggregator._run(notes=notes)
+    result_json = aggregator._run(notes=notes)
+
+    # Parse JSON result to AggregatedMetrics object
+    result = AggregatedMetrics.model_validate_json(result_json)
 
     logger.info(f"Aggregation complete: {result.sample_size} notes, "
                 f"{result.outliers_removed} outliers removed")
@@ -100,14 +136,16 @@ def extract_features_matrix(notes: List[Note]) -> Dict[str, Dict]:
 
         # Extract text features
         try:
-            text_result = nlp_tool._run(note_metadata=note.meta_data)
+            text_result_json = nlp_tool._run(note_meta_data=note.meta_data, note_id=note.note_id)
+            text_result = TextAnalysisResult.model_validate_json(text_result_json)
             note_features["text"] = text_result
         except Exception as e:
             logger.warning(f"NLP analysis failed for note {note.note_id}: {e}")
 
         # Extract vision features (may fail if no images)
         try:
-            vision_result = vision_tool._run(note_metadata=note.meta_data)
+            vision_result_json = vision_tool._run(note_meta_data=note.meta_data, note_id=note.note_id)
+            vision_result = VisionAnalysisResult.model_validate_json(vision_result_json)
             note_features["vision"] = vision_result
         except Exception as e:
             logger.warning(f"Vision analysis failed for note {note.note_id}: {e}")
@@ -132,22 +170,52 @@ def identify_patterns(
     min_prevalence_pct: float = 70.0,
     max_p_value: float = 0.05
 ) -> List[FeaturePattern]:
-    """Identify statistically significant patterns using attribution rules.
+    """Identify content patterns from target notes using Direct Prevalence Analysis.
 
-    This implements Layer 1 (Domain Rules) and Layer 2 (Statistical Correlation)
+    This implements Layer 1 (Domain Rules) and Layer 2 (Direct Prevalence)
     of the hybrid attribution engine.
 
+    **Key Design Decision:**
+    Target_notes are already curated high-quality content (top search results),
+    not a diverse sample. Therefore, we use Direct Prevalence Analysis instead of
+    split+compare approach:
+    - If a feature appears in ≥70% of target_notes, it's a success pattern
+    - No need for statistical significance testing (no control group)
+
     Args:
-        notes: List of notes
+        notes: List of target notes (pre-filtered high-quality content)
         features_matrix: Feature data for each note
         aggregated_stats: Baseline statistics
         min_prevalence_pct: Minimum prevalence threshold (default 70%)
-        max_p_value: Maximum p-value threshold (default 0.05)
+        max_p_value: Not used in new logic (kept for API compatibility)
 
     Returns:
         List of FeaturePattern objects (without LLM fields filled)
     """
-    logger.info("Identifying patterns with statistical significance...")
+    logger.info("Identifying patterns using Direct Prevalence Analysis...")
+    logger.info(f"Target notes are curated high-quality content, not diverse sample")
+
+    sample_size = len(notes)
+
+    # Adjust threshold for small samples
+    is_small_sample = sample_size < 10
+    if is_small_sample:
+        adjusted_prevalence_pct = 50.0  # More lenient for small samples
+        logger.warning(
+            f"Small sample size detected ({sample_size} notes). "
+            f"Using adjusted threshold: {adjusted_prevalence_pct}% (vs {min_prevalence_pct}%)"
+        )
+    else:
+        adjusted_prevalence_pct = min_prevalence_pct
+
+    logger.info("=" * 80)
+    logger.info("PATTERN DETECTION CONFIGURATION")
+    logger.info("=" * 80)
+    logger.info(f"Sample size: {sample_size} notes")
+    logger.info(f"Detection method: Direct Prevalence Analysis (no split)")
+    logger.info(f"Prevalence threshold: {adjusted_prevalence_pct}%")
+    logger.info(f"Rationale: target_notes are already top performers")
+    logger.info("=" * 80)
 
     patterns = []
 
@@ -155,17 +223,16 @@ def identify_patterns(
     metrics = get_all_metrics()
 
     for metric in metrics:
-        # Check if this metric has data
         if metric not in aggregated_stats.prediction_stats:
-            logger.debug(f"Skipping {metric}: no data in aggregated_stats")
+            logger.warning(f"Skipping metric {metric}: not found in aggregated stats")
             continue
 
         logger.info(f"Analyzing patterns for metric: {metric}")
 
-        # Layer 1: Get relevant features for this metric
+        # Layer 1: Get relevant features for this metric (from domain knowledge)
         relevant_features = get_relevant_features(metric)
 
-        # Sort notes by metric value
+        # Get notes with this metric value (for logging and sorting)
         metric_values = []
         for note in notes:
             try:
@@ -175,29 +242,33 @@ def identify_patterns(
             except AttributeError:
                 continue
 
-        if len(metric_values) < 10:
-            logger.warning(f"Insufficient data for {metric}: only {len(metric_values)} notes")
+        if len(metric_values) < AnalysisConfig.MIN_SAMPLE_SIZE:
+            logger.warning(f"Insufficient data for {metric}: only {len(metric_values)} notes (minimum {AnalysisConfig.MIN_SAMPLE_SIZE} required)")
             continue
 
-        # Sort by metric value descending
+        # Sort by metric value for logging (highest first)
         metric_values.sort(key=lambda x: x[1], reverse=True)
+        all_notes_with_metric = [note for note, _ in metric_values]
 
-        # Split into top 25% (high) vs rest (baseline)
-        cutoff = max(1, len(metric_values) // 4)
-        high_group = [note for note, _ in metric_values[:cutoff]]
-        baseline_group = [note for note, _ in metric_values[cutoff:]]
+        logger.info("-" * 80)
+        logger.info(f"METRIC: {metric}")
+        logger.info("-" * 80)
+        logger.info(f"Total notes with {metric} data: {len(metric_values)}")
+        logger.info(f"Metric values (sorted, note_id: value):")
+        for note, value in metric_values[:AnalysisConfig.MAX_METRIC_VALUES_DISPLAY]:
+            logger.info(f"  {note.note_id[:16]}...: {value:.6f}")
+        if len(metric_values) > AnalysisConfig.MAX_METRIC_VALUES_DISPLAY:
+            logger.info(f"  ... and {len(metric_values) - AnalysisConfig.MAX_METRIC_VALUES_DISPLAY} more")
+        logger.info(f"\nRelevant features to check ({len(relevant_features)}): {relevant_features}")
+        logger.info("-" * 80)
 
-        logger.debug(f"{metric}: {len(high_group)} high, {len(baseline_group)} baseline")
-
-        # Layer 2: Calculate pattern prevalence for each relevant feature
+        # Layer 2: Calculate direct prevalence for each relevant feature
         for feature_name in relevant_features:
-            # Extract feature presence for all notes
-            high_count = 0
-            baseline_count = 0
+            feature_count = 0
             examples = []
 
-            # Count prevalence in high group
-            for note in high_group:
+            # Count how many notes have this feature
+            for note in all_notes_with_metric:
                 if note.note_id not in features_matrix:
                     continue
 
@@ -207,59 +278,36 @@ def identify_patterns(
                 )
 
                 if has_feature:
-                    high_count += 1
-                    if len(examples) < 3:  # Collect up to 3 examples
+                    feature_count += 1
+                    if len(examples) < AnalysisConfig.MAX_EXAMPLES_PER_PATTERN:
                         examples.append(_get_feature_example(
                             feature_name,
                             note,
                             features_matrix[note.note_id]
                         ))
 
-            # Count prevalence in baseline group
-            for note in baseline_group:
-                if note.note_id not in features_matrix:
-                    continue
+            # Calculate prevalence
+            total_notes = len(all_notes_with_metric)
+            prevalence_pct = (feature_count / total_notes * 100) if total_notes > 0 else 0
 
-                has_feature = _check_feature_presence(
-                    feature_name,
-                    features_matrix[note.note_id]
-                )
+            logger.info(f"\n  Feature: {feature_name}")
+            logger.info(f"    Prevalence: {feature_count}/{total_notes} ({prevalence_pct:.1f}%)")
+            logger.info(f"    Threshold: {adjusted_prevalence_pct}%")
+            logger.info(f"    Result: {'PASS ✓' if prevalence_pct >= adjusted_prevalence_pct else 'FAIL ✗'}")
 
-                if has_feature:
-                    baseline_count += 1
-
-            # Calculate statistics
-            if len(high_group) == 0 or len(baseline_group) == 0:
-                continue
-
-            prevalence_pct, z_score, p_value = _calculate_pattern_stats(
-                high_count, len(high_group),
-                baseline_count, len(baseline_group)
-            )
-
-            baseline_pct = (baseline_count / len(baseline_group) * 100) if len(baseline_group) > 0 else 0
-
-            # Filter by significance thresholds
-            if prevalence_pct >= min_prevalence_pct and p_value < max_p_value:
-                # Calculate effect size (delta percentage)
-                delta_pct = prevalence_pct - baseline_pct
-
-                # Determine feature type
+            # Check if prevalence meets threshold
+            if prevalence_pct >= adjusted_prevalence_pct:
                 feature_type = _get_feature_type(feature_name)
 
                 # Create pattern (without LLM fields - those come in Layer 3)
                 pattern = FeaturePattern(
                     feature_name=feature_name,
                     feature_type=feature_type,
-                    description=f"{feature_name}模式在高{metric}笔记中显著流行",
+                    description=f"{feature_name}在优质{metric}笔记中普遍存在",
                     prevalence_pct=prevalence_pct,
-                    baseline_pct=baseline_pct,
-                    affected_metrics={metric: delta_pct},
-                    statistical_evidence=f"z={z_score:.2f}, p={p_value:.4f}, n={high_count}/{len(high_group)}",
-                    z_score=z_score,
-                    p_value=p_value,
-                    sample_size_high=len(high_group),
-                    sample_size_baseline=len(baseline_group),
+                    affected_metrics={metric: prevalence_pct},
+                    statistical_evidence=f"prevalence={prevalence_pct:.1f}%, n={feature_count}/{total_notes}",
+                    sample_size=total_notes,
                     examples=examples if examples else [f"示例：{feature_name}"],
                     # LLM fields placeholder - will be filled in Layer 3
                     why_it_works="待LLM分析",
@@ -268,8 +316,8 @@ def identify_patterns(
                 )
 
                 patterns.append(pattern)
-                logger.info(f"Found significant pattern: {feature_name} for {metric} "
-                          f"(prevalence={prevalence_pct:.1f}%, p={p_value:.4f})")
+                logger.info(f"    ✓✓✓ PATTERN FOUND! ✓✓✓")
+                logger.info(f"    Feature '{feature_name}' appears in {prevalence_pct:.1f}% of target notes")
 
     logger.info(f"Pattern identification complete: {len(patterns)} patterns found")
 
@@ -280,103 +328,140 @@ def _check_feature_presence(feature_name: str, note_features: Dict) -> bool:
     """Check if a feature is present in a note's analysis results.
 
     Args:
-        feature_name: Name of feature to check (e.g., "interrogative_title")
+        feature_name: Name of feature to check (e.g., "title_pattern", "thumbnail_appeal")
         note_features: Feature dict with "text", "vision", "prediction", "tag" keys
 
     Returns:
-        True if feature is present, False otherwise
+        True if feature is present and has meaningful content, False otherwise
     """
     text_result = note_features.get("text")
     vision_result = note_features.get("vision")
     tag = note_features.get("tag")
 
-    # Map feature names to actual checks in analysis results
-    # This is a heuristic mapping - can be improved with more sophisticated logic
+    # Direct field mapping: check if the exact field exists and has meaningful content
+    # This replaces the old heuristic approach with direct field checks
 
-    # Title features
-    if "title" in feature_name.lower():
-        if text_result and hasattr(text_result, 'title_framework'):
-            title_framework = text_result.title_framework
-            if "interrogative" in feature_name.lower() or "疑问" in feature_name.lower():
-                return "疑问句" in title_framework or "？" in getattr(note_features.get("prediction"), "title", "")
-            if "benefit" in feature_name.lower():
-                return any(word in title_framework for word in ["利益", "福利", "优惠", "实用"])
-            if "curiosity" in feature_name.lower():
-                return any(word in title_framework for word in ["好奇", "悬念", "揭秘"])
-            return len(title_framework) > 0  # Has some title pattern
-        return False
+    # First, try text analysis fields (TextAnalysisResult)
+    if text_result and hasattr(text_result, feature_name):
+        value = getattr(text_result, feature_name)
 
-    # Cover/Visual features
-    if "cover" in feature_name.lower() or "visual" in feature_name.lower() or "thumbnail" in feature_name.lower():
-        if vision_result:
-            if "quality" in feature_name.lower():
-                return hasattr(vision_result, 'image_quality') and "高" in vision_result.image_quality
-            if "composition" in feature_name.lower():
-                return hasattr(vision_result, 'image_composition') and len(vision_result.image_composition) > 0
-            if "color" in feature_name.lower():
-                return hasattr(vision_result, 'color_scheme') and len(vision_result.color_scheme) > 0
-            if "appeal" in feature_name.lower() or "thumbnail" in feature_name.lower():
-                return hasattr(vision_result, 'thumbnail_appeal') and "强" in vision_result.thumbnail_appeal
-            return True  # Has vision analysis
-        return False
+        # Check if value is meaningful (non-empty, non-null, non-default)
+        if isinstance(value, str):
+            # String fields: non-empty and not default placeholder
+            return len(value) > 0 and value not in ["未评估", "未分析", "未识别", "未描述", "无"]
+        elif isinstance(value, list):
+            # List fields: non-empty list
+            return len(value) > 0
+        elif isinstance(value, (int, float)):
+            # Numeric fields: greater than 0
+            return value > 0
+        else:
+            # Other types: truthy value
+            return bool(value)
 
-    # Content features
-    if "content" in feature_name.lower() or "ending" in feature_name.lower():
-        if text_result:
-            if "ending" in feature_name.lower() or "cta" in feature_name.lower():
-                return hasattr(text_result, 'ending_technique') and len(text_result.ending_technique) > 0
-            if "framework" in feature_name.lower():
-                return hasattr(text_result, 'content_framework') and len(text_result.content_framework) > 0
-            if "pain" in feature_name.lower():
-                return hasattr(text_result, 'pain_points') and len(text_result.pain_points) > 0
-            if "value" in feature_name.lower():
-                return hasattr(text_result, 'value_propositions') and len(text_result.value_propositions) > 0
-            return True  # Has text analysis
-        return False
+    # Second, try vision analysis fields (VisionAnalysisResult)
+    if vision_result and hasattr(vision_result, feature_name):
+        value = getattr(vision_result, feature_name)
 
-    # Tag features
-    if "intention" in feature_name.lower() or "taxonomy" in feature_name.lower():
-        if tag:
-            if hasattr(tag, 'intention_lv2'):
-                return tag.intention_lv2 is not None and len(tag.intention_lv2) > 0
-            if hasattr(tag, 'taxonomy2'):
-                return tag.taxonomy2 is not None and len(tag.taxonomy2) > 0
-        return False
+        # Check if value is meaningful
+        if isinstance(value, str):
+            return len(value) > 0 and value not in ["未评估", "未分析", "未识别", "未描述", "无"]
+        elif isinstance(value, list):
+            return len(value) > 0
+        elif isinstance(value, (int, float)):
+            return value > 0
+        else:
+            return bool(value)
 
-    # Default: feature name exists somewhere in the text/vision results
+    # Third, try tag fields (Tag)
+    if tag and hasattr(tag, feature_name):
+        value = getattr(tag, feature_name)
+
+        if isinstance(value, str):
+            return len(value) > 0
+        elif isinstance(value, list):
+            return len(value) > 0
+        else:
+            return bool(value)
+
+    # Feature not found in any result
     return False
 
 
 def _get_feature_example(feature_name: str, note: Note, note_features: Dict) -> str:
-    """Get a concrete example of a feature from a note.
+    """Extract detailed feature value from analysis results.
+
+    This function extracts the ACTUAL feature value from TextAnalysisResult or
+    VisionAnalysisResult, not just placeholder strings. This is critical for LLM
+    to see real examples.
 
     Args:
-        feature_name: Name of the feature
+        feature_name: Name of the feature (e.g., "benefit_appeals", "title_pattern")
         note: The note object
-        note_features: Feature dict for the note
+        note_features: Feature dict with "text", "vision", "prediction", "tag" keys
 
     Returns:
-        String example of the feature
+        Formatted string with actual feature value from analysis results
     """
-    # Try to extract relevant example text
-    if "title" in feature_name.lower() and note.meta_data:
-        return f"标题: {note.meta_data.title[:50]}..."
+    text_result = note_features.get("text")
+    vision_result = note_features.get("vision")
+    tag = note_features.get("tag")
 
-    if "cover" in feature_name.lower() and note.meta_data:
-        return f"封面: {note.meta_data.cover_image_url[:50]}..."
+    # Try to get actual feature value from TextAnalysisResult
+    if text_result and hasattr(text_result, feature_name):
+        value = getattr(text_result, feature_name)
 
-    if "content" in feature_name.lower() and note.meta_data:
-        content = note.meta_data.content
-        return f"内容: {content[:50]}..." if content else "内容示例"
+        # Format based on value type
+        if isinstance(value, list):
+            if len(value) > 0:
+                # List fields: join with " | " for compact display
+                return f"{feature_name}: {' | '.join(str(v) for v in value[:3])}"
+            else:
+                return f"{feature_name}: []"
+        elif isinstance(value, str):
+            # String fields: truncate if too long
+            if len(value) > 100:
+                return f"{feature_name}: {value[:100]}..."
+            else:
+                return f"{feature_name}: {value}"
+        elif isinstance(value, (int, float)):
+            return f"{feature_name}: {value}"
+        else:
+            return f"{feature_name}: {str(value)}"
 
-    if "tag" in feature_name.lower() and note.tag:
-        return f"标签: {getattr(note.tag, 'intention_lv2', 'N/A')}"
+    # Try to get actual feature value from VisionAnalysisResult
+    if vision_result and hasattr(vision_result, feature_name):
+        value = getattr(vision_result, feature_name)
 
-    return f"示例: {feature_name} (笔记ID: {note.note_id})"
+        if isinstance(value, list):
+            if len(value) > 0:
+                return f"{feature_name}: {' | '.join(str(v) for v in value[:3])}"
+            else:
+                return f"{feature_name}: []"
+        elif isinstance(value, str):
+            if len(value) > 100:
+                return f"{feature_name}: {value[:100]}..."
+            else:
+                return f"{feature_name}: {value}"
+        elif isinstance(value, (int, float)):
+            return f"{feature_name}: {value}"
+        else:
+            return f"{feature_name}: {str(value)}"
+
+    # Try tag fields
+    if tag and hasattr(tag, feature_name):
+        value = getattr(tag, feature_name)
+        return f"{feature_name}: {value}"
+
+    # Fallback: feature not found (shouldn't happen if _check_feature_presence passed)
+    return f"{feature_name}: (未找到具体值, 笔记ID: {note.note_id[:16]}...)"
 
 
 def _get_feature_type(feature_name: str) -> str:
     """Determine feature type from feature name.
+
+    Uses combination of string matching and attribution rules to determine
+    whether a feature belongs to title, cover, content, or tag category.
 
     Args:
         feature_name: Name of the feature
@@ -386,14 +471,24 @@ def _get_feature_type(feature_name: str) -> str:
     """
     name_lower = feature_name.lower()
 
+    # Direct mapping based on common patterns
     if "title" in name_lower:
         return "title"
-    elif any(word in name_lower for word in ["cover", "visual", "thumbnail", "image", "color"]):
+    elif any(word in name_lower for word in [
+        "cover", "visual", "thumbnail", "image", "color",
+        "layout", "composition", "ocr", "appeal"
+    ]):
         return "cover"
     elif any(word in name_lower for word in ["tag", "intention", "taxonomy"]):
         return "tag"
+    elif any(word in name_lower for word in [
+        "opening", "ending", "content", "paragraph", "word_count",
+        "readability", "structure", "pain", "value", "emotional",
+        "credibility", "authority", "urgency", "benefit", "transformation"
+    ]):
+        return "content"
     else:
-        # Default to content for most features
+        # Default to content for unrecognized features
         return "content"
 
 
@@ -462,8 +557,9 @@ def synthesize_formulas(
     from openai import OpenAI
 
     # Get API configuration
+
     api_key = os.getenv("OPENROUTER_API_KEY", "")
-    model = os.getenv("OPENROUTER_TEXT_MODEL", "deepseek/deepseek-chat-v3.1")
+    model = os.getenv("OPENROUTER_TEXT_MODEL", "qwen/qwen3-235b-a22b-thinking-2507")
     site_url = os.getenv("OPENROUTER_SITE_URL", "https://openrouter.ai/api/v1")
     site_name = os.getenv("OPENROUTER_SITE_NAME", "XHS SEO Optimizer")
 
@@ -477,15 +573,23 @@ def synthesize_formulas(
         api_key=api_key
     )
 
-    # Process each pattern
-    for i, pattern in enumerate(patterns, 1):
-        logger.info(f"Synthesizing formula {i}/{len(patterns)}: {pattern.feature_name}")
+    # Batch processing: Process multiple patterns per API call
+    batch_size = AnalysisConfig.DEFAULT_BATCH_SIZE
+    total_batches = (len(patterns) + batch_size - 1) // batch_size  # Ceiling division
+
+    logger.info(f"Using batch processing: {len(patterns)} patterns in {total_batches} batches (batch_size={batch_size})")
+
+    for batch_idx in range(0, len(patterns), batch_size):
+        batch = patterns[batch_idx:batch_idx + batch_size]
+        batch_num = batch_idx // batch_size + 1
+
+        logger.info(f"Processing batch {batch_num}/{total_batches} ({len(batch)} patterns)...")
 
         try:
-            # Build LLM prompt with statistical evidence and examples
-            prompt = _build_formula_prompt(pattern)
+            # Build batch LLM prompt
+            prompt = _build_batch_formula_prompt(batch)
 
-            # Call OpenRouter API
+            # Call OpenRouter API once for the entire batch
             response = client.chat.completions.create(
                 extra_headers={
                     "HTTP-Referer": site_url,
@@ -501,38 +605,40 @@ def synthesize_formulas(
                 temperature=0.7,  # Higher temperature for creative formula generation
             )
 
-            # Extract and parse response
+            # Extract and parse batch response
             content = response.choices[0].message.content
-            formula_data = _parse_formula_response(content)
+            formulas_list = _parse_batch_formula_response(content, len(batch))
 
-            # Update pattern with LLM-generated insights
-            pattern.why_it_works = formula_data.get(
-                "why_it_works",
-                "该特征通过统计分析显示出显著影响"
-            )
-            pattern.creation_formula = formula_data.get(
-                "creation_formula",
-                f"遵循{pattern.feature_name}的最佳实践"
-            )
-            pattern.key_elements = formula_data.get(
-                "key_elements",
-                ["参考统计数据", "观察高分案例", "测试优化"]
-            )
+            # Update each pattern in the batch
+            for pattern, formula_data in zip(batch, formulas_list):
+                pattern.why_it_works = formula_data.get(
+                    "why_it_works",
+                    "该特征通过统计分析显示出显著影响"
+                )
+                pattern.creation_formula = formula_data.get(
+                    "creation_formula",
+                    f"遵循{pattern.feature_name}的最佳实践"
+                )
+                pattern.key_elements = formula_data.get(
+                    "key_elements",
+                    ["参考统计数据", "观察高分案例", "测试优化"]
+                )
 
-            logger.info(f"✓ Formula synthesized for {pattern.feature_name}")
+            logger.info(f"✓ Batch {batch_num}/{total_batches} completed ({len(batch)} patterns synthesized)")
 
         except Exception as e:
-            logger.warning(f"LLM synthesis failed for {pattern.feature_name}: {e}")
-            # Use fallback for this pattern
-            pattern.why_it_works = f"{pattern.feature_name}在高分笔记中显著流行（统计验证）"
-            pattern.creation_formula = f"采用{pattern.feature_name}模式，参考最佳案例"
-            pattern.key_elements = [
-                f"研究{pattern.feature_name}的成功案例",
-                f"理解目标用户对{pattern.feature_name}的偏好",
-                "测试并优化实际效果"
-            ]
+            logger.warning(f"Batch {batch_num} LLM synthesis failed: {e}")
+            # Use fallback for all patterns in this batch
+            for pattern in batch:
+                pattern.why_it_works = f"{pattern.feature_name}在优质笔记中广泛存在（统计验证）"
+                pattern.creation_formula = f"采用{pattern.feature_name}模式，参考最佳案例"
+                pattern.key_elements = [
+                    f"研究{pattern.feature_name}的成功案例",
+                    f"理解目标用户对{pattern.feature_name}的偏好",
+                    "测试并优化实际效果"
+                ]
 
-    logger.info("Formula synthesis complete")
+    logger.info(f"Formula synthesis complete: {len(patterns)} patterns processed in {total_batches} batches")
     return patterns
 
 
@@ -549,7 +655,7 @@ def _build_formula_prompt(pattern: FeaturePattern) -> str:
     metrics_str = ", ".join(pattern.affected_metrics.keys())
 
     # Build examples list
-    examples_str = "\n".join([f"  - {ex}" for ex in pattern.examples[:5]])
+    examples_str = "\n".join([f"  - {ex}" for ex in pattern.examples[:AnalysisConfig.MAX_EXAMPLES_SINGLE_PROMPT]])
 
     prompt = f"""你是小红书内容分析专家。请基于统计数据分析，为以下内容特征生成创作公式。
 
@@ -557,7 +663,7 @@ def _build_formula_prompt(pattern: FeaturePattern) -> str:
 **特征类型**：{pattern.feature_type}
 **影响指标**：{metrics_str}
 **统计证据**：{pattern.statistical_evidence}
-**流行度**：在高分笔记中占比 {pattern.prevalence_pct:.1f}%，基线占比 {pattern.baseline_pct:.1f}%
+**流行度**：在目标笔记中占比 {pattern.prevalence_pct:.1f}%
 
 **实际案例**：
 {examples_str}
@@ -636,6 +742,165 @@ def _parse_formula_response(content: str) -> Dict[str, Any]:
         raise ValueError(f"Failed to parse LLM response: {e}")
 
 
+def _build_batch_formula_prompt(patterns: List[FeaturePattern]) -> str:
+    """Build LLM prompt for batch formula synthesis with detailed examples.
+
+    CRITICAL: This prompt must include REAL feature values from analysis results,
+    not just feature names. LLM needs to see actual examples to provide specific guidance.
+
+    Args:
+        patterns: List of patterns with detailed examples from _get_feature_example()
+
+    Returns:
+        Chinese prompt for batch LLM processing with emphasis on actionability
+    """
+    # Build patterns list with detailed examples
+    patterns_str = ""
+    for i, pattern in enumerate(patterns, 1):
+        metrics_str = ", ".join(pattern.affected_metrics.keys())
+
+        # Use detailed examples (already formatted by _get_feature_example())
+        examples_list = pattern.examples[:AnalysisConfig.MAX_EXAMPLES_BATCH_PROMPT]
+        examples_str = "\n   ".join([f"• {ex}" for ex in examples_list])
+
+        patterns_str += f"""
+**模式{i}: {pattern.feature_name}**
+- 特征类型: {pattern.feature_type}
+- 影响指标: {metrics_str}
+- 统计证据: {pattern.statistical_evidence}
+- 流行度: {pattern.prevalence_pct:.1f}% (在优质笔记中)
+- 真实案例（来自高质量笔记分析）:
+   {examples_str}
+"""
+
+    prompt = f"""你是小红书内容策略专家。基于对{len(patterns)}个高质量笔记的实际分析数据，请为每个内容特征生成可执行的创作公式。
+
+**重要提示**：
+1. 上述案例来自真实的高质量笔记分析结果，不是理论推测
+2. 请仔细观察案例中的具体特征值，提取可复制的模式
+3. 创作公式必须具体到可以直接套用，避免泛泛而谈
+
+{patterns_str}
+
+请为每个模式分析并生成：
+
+1. **why_it_works（为什么有效）**：
+   - 基于上述真实案例，解释这个特征为什么在小红书平台有效
+   - 从用户心理学（为什么用户会点击/互动）、平台算法（平台如何推荐）、内容传播（如何引发分享）三个角度分析
+   - 2-3句话，直接、具体，避免空洞的理论
+
+2. **creation_formula（创作公式）**：
+   - 提供可直接套用的创作模板或公式
+   - 如果是标题：给出具体的标题结构（如"【数字】+【动词】+【痛点】+【emoji】"）
+   - 如果是内容：给出段落结构或叙事框架
+   - 如果是视觉：给出具体的设计要求（颜色、构图、文字位置等）
+   - 必须具体到创作者看了就知道怎么做
+
+3. **key_elements（关键要素）**：
+   - 列出3-5个具体、可验证的执行要点
+   - 每个要点要有明确的标准（如"标题字数15-20字"、"开头3句话内点明痛点"）
+   - 如果可能，参考真实案例中的具体数字、格式、位置
+   - 按优先级排序（最关键的放最前面）
+   - 避免模糊的表述（如"提高吸引力"），要具体说明如何提高
+
+**输出格式**：
+请以JSON数组格式返回，每个元素对应一个模式：
+[
+  {{
+    "why_it_works": "基于真实案例的心理学分析...",
+    "creation_formula": "可直接套用的创作模板或公式...",
+    "key_elements": ["具体要点1（包含数字/标准）", "具体要点2", "具体要点3", ...]
+  }},
+  ...
+]
+
+**质量标准**：
+- creation_formula 必须是创作者看了就能模仿的模板，不能是抽象建议
+- key_elements 的每一条都要有可执行性，最好包含具体的数字或格式要求
+- 所有建议都要基于上述真实案例的观察，不要臆测
+- 返回的数组长度必须等于{len(patterns)}
+
+开始分析："""
+
+    return prompt
+
+
+def _parse_batch_formula_response(content: str, expected_count: int) -> List[Dict[str, Any]]:
+    """Parse LLM batch formula response.
+
+    Args:
+        content: Response content from LLM
+        expected_count: Expected number of formulas
+
+    Returns:
+        List of dicts, each with why_it_works, creation_formula, key_elements
+
+    Raises:
+        ValueError: If response cannot be parsed or count mismatch
+    """
+    import json
+
+    try:
+        # Try to extract JSON from response
+        if "```json" in content:
+            json_start = content.find("```json") + 7
+            json_end = content.find("```", json_start)
+            json_str = content[json_start:json_end].strip()
+        elif "```" in content:
+            json_start = content.find("```") + 3
+            json_end = content.find("```", json_start)
+            json_str = content[json_start:json_end].strip()
+        else:
+            json_str = content.strip()
+
+        data = json.loads(json_str)
+
+        # Validate it's a list
+        if not isinstance(data, list):
+            raise ValueError(f"Expected list, got {type(data)}")
+
+        # Validate count
+        if len(data) != expected_count:
+            logger.warning(f"Expected {expected_count} formulas, got {len(data)}")
+            # Pad with defaults if too few
+            while len(data) < expected_count:
+                data.append({
+                    "why_it_works": "统计验证有效的内容模式",
+                    "creation_formula": "遵循最佳实践",
+                    "key_elements": ["参考统计数据", "观察高分案例", "测试优化"]
+                })
+            # Truncate if too many
+            data = data[:expected_count]
+
+        # Validate each item has required fields
+        for i, item in enumerate(data):
+            if not isinstance(item, dict):
+                raise ValueError(f"Item {i} is not a dict")
+
+            required_fields = ["why_it_works", "creation_formula", "key_elements"]
+            for field in required_fields:
+                if field not in item:
+                    # Fill with default
+                    if field == "key_elements":
+                        item[field] = ["参考统计数据", "观察高分案例", "测试优化"]
+                    else:
+                        item[field] = "待完善"
+
+        return data
+
+    except Exception as e:
+        logger.error(f"Failed to parse batch LLM response: {e}")
+        # Return default formulas
+        return [
+            {
+                "why_it_works": "统计验证有效的内容模式",
+                "creation_formula": "遵循最佳实践",
+                "key_elements": ["参考统计数据", "观察高分案例", "测试优化"]
+            }
+            for _ in range(expected_count)
+        ]
+
+
 def _synthesize_formulas_fallback(patterns: List[FeaturePattern]) -> List[FeaturePattern]:
     """Fallback formula synthesis when LLM is unavailable.
 
@@ -653,9 +918,9 @@ def _synthesize_formulas_fallback(patterns: List[FeaturePattern]) -> List[Featur
         primary_metric = metrics[0] if metrics else "互动"
 
         pattern.why_it_works = (
-            f"{pattern.feature_name}在高{primary_metric}笔记中的流行度显著高于基线"
-            f"（{pattern.prevalence_pct:.1f}% vs {pattern.baseline_pct:.1f}%），"
-            f"统计检验显示该模式与成功内容存在强相关性。"
+            f"{pattern.feature_name}在优质{primary_metric}笔记中广泛存在"
+            f"（流行度{pattern.prevalence_pct:.1f}%），"
+            f"表明该模式是成功内容的重要特征。"
         )
 
         pattern.creation_formula = (
@@ -703,15 +968,16 @@ def generate_summary_insights(
         return key_success_factors, viral_formula_summary
 
     # Sort patterns by impact score
+    # Use prevalence_pct * sample_size as impact score (higher prevalence + larger sample = higher impact)
     scored_patterns = []
     for pattern in patterns:
-        impact_score = pattern.z_score * pattern.prevalence_pct
+        impact_score = pattern.prevalence_pct * pattern.sample_size
         scored_patterns.append((pattern, impact_score))
 
     scored_patterns.sort(key=lambda x: x[1], reverse=True)
 
-    # Select top 3-5 patterns
-    top_patterns = [p for p, _ in scored_patterns[:5]]
+    # Select top patterns
+    top_patterns = [p for p, _ in scored_patterns[:AnalysisConfig.TOP_PATTERNS_COUNT]]
 
     # NOTE: Full implementation would:
     # 1. Build LLM prompt with top patterns and their evidence
@@ -722,17 +988,17 @@ def generate_summary_insights(
 
     # Placeholder implementation
     key_success_factors = []
-    for i, pattern in enumerate(top_patterns[:5]):
+    for i, pattern in enumerate(top_patterns[:AnalysisConfig.MAX_SUCCESS_FACTORS]):
         factor = f"{pattern.feature_name}: {pattern.description}"
         key_success_factors.append(factor)
 
-    # Ensure we have 3-5 factors
-    while len(key_success_factors) < 3:
+    # Ensure we have minimum required factors
+    while len(key_success_factors) < AnalysisConfig.MIN_SUCCESS_FACTORS:
         key_success_factors.append(f"待分析的成功因素 {len(key_success_factors) + 1}")
 
     viral_formula_summary = (
         f"基于 {len(patterns)} 个统计显著的内容模式分析，"
-        f"发现高表现笔记主要具备以下特征：{', '.join([p.feature_name for p in top_patterns[:3]])}。"
+        f"发现高表现笔记主要具备以下特征：{', '.join([p.feature_name for p in top_patterns[:AnalysisConfig.TOP_FEATURES_IN_SUMMARY]])}。"
         f"这些模式在高分组中的流行度显著高于基线组，具有可复制性。"
     )
 

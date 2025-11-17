@@ -2,6 +2,9 @@
 
 This module defines which content features causally affect which prediction metrics,
 based on platform mechanics and user behavior psychology.
+
+**重要**: 所有features必须在TextAnalysisResult/VisionAnalysisResult中真实存在
+小红书平台机制：双列瀑布流，用户点击前只能看到【标题、封面缩略图、作者、点赞数】
 """
 
 from typing import Dict, List
@@ -9,204 +12,264 @@ from typing import Dict, List
 # Type alias for attribution rule
 AttributionRule = Dict[str, any]
 
-# TODO, 这个规则性的东西需要认真人工review遍。
-
 METRIC_FEATURE_ATTRIBUTION: Dict[str, AttributionRule] = {
-    # CTR (Click-Through Rate) - 用户决定是否点击时只能看到标题和封面
+    # ========================================
+    # CTR (Click-Through Rate)
+    # 用户决定是否点击时的可见元素
+    # ========================================
     "ctr": {
         "features": [
-            # Title features (从NLPAnalysisTool.TextAnalysisResult)
-            "title_pattern",
-            "title_keywords",
-            "title_emotion",
-            "title_length",
-            "interrogative_title",
-            "benefit_focused_title",
-            "curiosity_gap",
+            # Title features (从TextAnalysisResult)
+            "title_pattern",  # 标题套路模板（疑问句、数字列表等）
+            "title_keywords",  # 标题关键词
+            "title_emotion",  # 标题情感倾向
 
-            # Cover features (从MultiModalVisionTool.VisionAnalysisResult)
-            "cover_quality",
-            "cover_composition",
-            "cover_color_scheme",
-            "thumbnail_appeal",
-            "visual_tone",
-            "cover_text_overlay",
+            # Cover thumbnail features (从VisionAnalysisResult)
+            "thumbnail_appeal",  # 封面图吸引力（最关键）
+            "visual_tone",  # 视觉调性
+            "color_scheme",  # 色彩方案
+            "text_ocr_content_highlight",  # 封面图内突出文字
         ],
-        "rationale": "用户点击前仅能看到标题和封面缩略图，因此CTR仅受这两个元素影响"
+        "rationale": "用户在信息流中仅能看到：标题、封面缩略图、作者昵称、点赞数。CTR完全由标题和封面缩略图的吸引力决定"
     },
 
-    # Comment Rate - 评论由内容质量和互动引导决定
+    # ========================================
+    # Comment Rate - 评论由内容深度和引导决定
+    # ========================================
     "comment_rate": {
         "features": [
-            # Content features (从NLPAnalysisTool.TextAnalysisResult)
-            "ending_technique",
-            "ending_cta",
-            "content_framework",
-            "pain_points",
-            "credibility_signals",
-            "question_density",
-            "controversial_points",
-            "value_propositions",
-            "personal_story",
+            # Opening hooks (从TextAnalysisResult)
+            "opening_strategy",  # 开头策略
+            "opening_hook",  # 开头钩子类型
+            "opening_impact",  # 开头冲击力
 
-            # Title features (may influence)
-            "title_pattern",
-            "interrogative_title",
+            # Content depth (从TextAnalysisResult)
+            "content_framework",  # 正文框架
+            "content_logic",  # 内容逻辑层次
+            "pain_points",  # 痛点挖掘
+            "pain_intensity",  # 痛点强度
+            "value_propositions",  # 价值主张
+
+            # Ending CTA (从TextAnalysisResult)
+            "ending_technique",  # 结尾技巧
+            "ending_cta",  # 行动召唤
+            "ending_resonance",  # 结尾共鸣度
+
+            # Credibility (从TextAnalysisResult)
+            "credibility_signals",  # 可信度信号
+            "social_proof",  # 社会证明
         ],
-        "rationale": "评论行为由内容深度和结尾引导触发，标题可能影响初始期待"
+        "rationale": "评论行为由内容深度、互动引导（ending_cta）和可信度触发。开头钩子吸引阅读，痛点共鸣和结尾召唤促进评论"
     },
 
-    # Interaction Rate (综合互动) - 受多方面影响
+    # ========================================
+    # Interaction Rate (综合互动率)
+    # = like_rate + comment_rate + collect_rate
+    # ========================================
     "interaction_rate": {
         "features": [
-            # Title features
+            # Title (从TextAnalysisResult)
             "title_pattern",
             "title_emotion",
-            "benefit_focused_title",
 
-            # Cover features
-            "cover_composition",
-            "visual_tone",
+            # Cover & Visual (从VisionAnalysisResult)
             "thumbnail_appeal",
-
-            # Content features
-            "content_framework",
-            "value_propositions",
-            "emotional_triggers",
-            "visual_storytelling",
-        ],
-        "rationale": "综合互动（点赞+评论+收藏）受标题、视觉和内容共同影响"
-    },
-
-    # Sort Score (排序分数) - 平台算法综合评估
-    "sort_score2": {
-        "features": [
-            # Tag features (从Note.tag)
-            "intention_lv2",
-            "taxonomy2",
-
-            # Content features
-            "content_framework",
-            "value_density",
-            "credibility_signals",
-            "authenticity",
-            "practical_tips",
-            "expertise_signals",
-
-            # Title features
-            "title_relevance",
-            "keyword_coverage",
-        ],
-        "rationale": "平台优先推荐有价值、真实的干货内容，意图分类和内容质量是关键"
-    },
-
-    # Like Rate - 情感共鸣和视觉吸引
-    "like_rate": {
-        "features": [
-            # Content features
-            "emotional_triggers",
-            "benefit_appeals",
-            "transformation_promise",
-            "personal_style",
-
-            # Visual features
             "visual_tone",
-            "cover_aesthetic",
-            "visual_storytelling",
             "color_scheme",
 
-            # Title features
-            "title_emotion",
-            "benefit_focused_title",
+            # Content quality (从TextAnalysisResult)
+            "content_framework",
+            "value_propositions",
+            "emotional_triggers",
+            "emotional_intensity",
+
+            # Visual storytelling (从VisionAnalysisResult)
+            "visual_storytelling",  # 内页图叙事连贯性
+            "image_style",  # 图片风格
         ],
-        "rationale": "点赞由情感共鸣和视觉美感驱动，是最轻量级的互动形式"
+        "rationale": "综合互动（点赞+评论+收藏）受标题、封面、内容情感和视觉叙事共同影响"
     },
 
-    # Share Rate - 内容价值和社交货币
+    # ========================================
+    # Sort Score (平台排序分数)
+    # 平台算法综合评估
+    # ========================================
+    "sort_score2": {
+        "features": [
+            # Tag classification (从Note.tag)
+            "intention_lv2",  # 意图分类
+            "taxonomy2",  # 品类分类
+
+            # Content quality (从TextAnalysisResult)
+            "content_framework",  # 内容框架
+            "structure_completeness",  # 结构完整性
+            "readability_score",  # 可读性评分
+            "word_count",  # 字数统计
+
+            # Value & credibility (从TextAnalysisResult)
+            "value_propositions",  # 价值主张
+            "value_hierarchy",  # 价值层次
+            "credibility_signals",  # 可信度信号
+            "authority_indicators",  # 权威性指标
+
+            # Visual quality (从VisionAnalysisResult)
+            "image_quality",  # 图片质量
+            "image_content_relation",  # 图文关联度
+        ],
+        "rationale": "平台优先推荐分类准确、内容完整、有价值的优质内容。意图分类、内容质量、可信度和图文匹配是关键"
+    },
+
+    # ========================================
+    # Like Rate - 情感共鸣和视觉美感
+    # ========================================
+    "like_rate": {
+        "features": [
+            # Emotional appeal (从TextAnalysisResult)
+            "emotional_triggers",  # 情感触发器
+            "emotional_intensity",  # 情感强度
+            "benefit_appeals",  # 利益点吸引
+            "transformation_promise",  # 转变承诺
+
+            # Visual aesthetics (从VisionAnalysisResult)
+            "visual_tone",  # 视觉调性
+            "color_scheme",  # 色彩方案
+            "image_style",  # 图片风格
+            "visual_storytelling",  # 视觉叙事
+
+            # Personal touch (从VisionAnalysisResult)
+            "personal_style",  # 个人风格
+            "realistic_and_emotional_tone",  # 真实感和情绪基调
+        ],
+        "rationale": "点赞是最轻量级的互动，由情感共鸣和视觉美感驱动。真实感和个人风格能增强情感连接"
+    },
+
+    # ========================================
+    # Share Rate - 社交货币价值
+    # ========================================
     "share_rate": {
         "features": [
-            # Content features
-            "value_propositions",
-            "practical_tips",
-            "social_proof",
-            "exclusivity",
-            "controversial_points",
-            "transformation_promise",
-            "expertise_signals",
+            # High-value content (从TextAnalysisResult)
+            "value_propositions",  # 价值主张
+            "value_hierarchy",  # 价值层次
+            "benefit_appeals",  # 利益点吸引
+            "transformation_promise",  # 转变承诺
 
-            # Title features
-            "title_pattern",
-            "benefit_focused_title",
+            # Social proof (从TextAnalysisResult)
+            "social_proof",  # 社会证明
+            "credibility_signals",  # 可信度信号
+            "authority_indicators",  # 权威性指标
+
+            # Psychological triggers (从TextAnalysisResult)
+            "urgency_indicators",  # 紧迫感指标
+            "scarcity_elements",  # 稀缺性元素
+
+            # Title appeal (从TextAnalysisResult)
+            "title_pattern",  # 标题套路
+            "title_emotion",  # 标题情感
         ],
-        "rationale": "分享行为需要内容具备社交货币价值，即转发后能让分享者获得正面形象"
+        "rationale": "分享需要内容具备社交货币价值，即转发后能让分享者显得有眼光、有价值。权威性、稀缺性和利益点是关键"
     },
 
-    # Follow Rate - 长期价值和个人品牌
+    # ========================================
+    # Follow Rate - 创作者长期价值
+    # ========================================
     "follow_rate": {
         "features": [
-            # Content features
-            "personal_style",
-            "expertise_signals",
-            "consistency",
-            "value_density",
-            "transformation_promise",
-            "brand_consistency",
-            "authenticity",
+            # Personal branding (从VisionAnalysisResult)
+            "personal_style",  # 个人风格
+            "brand_consistency",  # 品牌一致性
+            "visual_tone",  # 视觉调性
 
-            # Visual features
-            "visual_tone",
-            "brand_consistency",
+            # Expertise & value (从TextAnalysisResult)
+            "authority_indicators",  # 权威性指标
+            "credibility_signals",  # 可信度信号
+            "value_propositions",  # 价值主张
+            "value_hierarchy",  # 价值层次
+
+            # Content quality (从TextAnalysisResult)
+            "structure_completeness",  # 结构完整性
+            "readability_score",  # 可读性评分
+            "transformation_promise",  # 转变承诺
+
+            # Visual quality (从VisionAnalysisResult)
+            "image_quality",  # 图片质量
+            "visual_hierarchy",  # 视觉层次
         ],
-        "rationale": "关注决策基于对创作者长期价值的认可，而非单篇内容"
+        "rationale": "关注决策基于对创作者长期价值的认可。个人风格、品牌一致性、专业性和持续提供价值的能力是关键"
     },
 
-    # Collect Rate (收藏率) - 实用价值和未来参考
+    # ========================================
+    # Collect Rate (收藏率) - 实用参考价值
+    # ========================================
     "collect_rate": {
         "features": [
-            # Content features
-            "practical_tips",
-            "value_density",
-            "content_framework",
-            "credibility_signals",
-            "step_by_step_guide",
+            # Practical value (从TextAnalysisResult)
+            "value_propositions",  # 价值主张
+            "benefit_appeals",  # 利益点吸引
+            "content_framework",  # 内容框架
+            "content_logic",  # 内容逻辑层次
 
-            # Title features
-            "title_pattern",
-            "benefit_focused_title",
+            # Credibility (从TextAnalysisResult)
+            "credibility_signals",  # 可信度信号
+            "authority_indicators",  # 权威性指标
+            "social_proof",  # 社会证明
+
+            # Structure (从TextAnalysisResult)
+            "structure_completeness",  # 结构完整性
+            "paragraph_structure",  # 段落结构特点
+            "word_count",  # 字数统计（干货通常较长）
+
+            # Title (从TextAnalysisResult)
+            "title_pattern",  # 标题套路
         ],
-        "rationale": "收藏行为表明内容有实用价值，用户想留存以便未来参考"
+        "rationale": "收藏表明内容有实用价值，用户想留存以便未来参考。结构完整、逻辑清晰、可信度高的干货内容收藏率高"
     },
 
-    # Click Valid Rate (有效点击率) - 内容与预期的匹配度
-    "click_valid_rate": {
+    # ========================================
+    # CES Rate (Complete Engagement Score)
+    # 完整互动评分（平台定义的综合指标）
+    # ========================================
+    "ces_rate": {
         "features": [
-            # Title features
-            "title_relevance",
-            "title_accuracy",
-            "clickbait_level",
+            # Engagement drivers (从TextAnalysisResult)
+            "opening_strategy",  # 开头策略（吸引阅读）
+            "opening_hook",  # 开头钩子
+            "content_framework",  # 内容框架
+            "ending_technique",  # 结尾技巧
+            "ending_cta",  # 行动召唤
 
-            # Content features
-            "content_framework",
+            # Visual engagement (从VisionAnalysisResult)
+            "visual_storytelling",  # 视觉叙事
+            "visual_hierarchy",  # 视觉层次
+            "image_content_relation",  # 图文关联度
+
+            # Emotional & value (从TextAnalysisResult)
+            "emotional_triggers",  # 情感触发
+            "value_propositions",  # 价值主张
+        ],
+        "rationale": "完整互动需要从开头到结尾全程吸引用户。开头钩子、内容框架、视觉叙事和结尾召唤共同决定用户是否完整阅读并互动"
+    },
+
+    # ========================================
+    # Fav Rate (收藏率 - 另一个可能的指标名)
+    # 与collect_rate相同
+    # ========================================
+    "fav_rate": {
+        "features": [
+            # Same as collect_rate
             "value_propositions",
-            "expectation_match",
-        ],
-        "rationale": "有效点击率反映标题与内容的匹配度，低clickbait和高相关性提升此指标"
-    },
-
-    # Note Valid Rate (笔记有效率) - 平台质量评估
-    "note_valid_rate": {
-        "features": [
-            # Content features
-            "authenticity",
+            "benefit_appeals",
+            "content_framework",
+            "content_logic",
             "credibility_signals",
-            "content_completeness",
-            "value_density",
-
-            # Tag features
-            "intention_lv2",
-            "taxonomy2",
+            "authority_indicators",
+            "social_proof",
+            "structure_completeness",
+            "paragraph_structure",
+            "word_count",
+            "title_pattern",
         ],
-        "rationale": "平台判定笔记是否有效的指标，低质量、违规、广告嫌疑会降低此值"
+        "rationale": "收藏（fav_rate）与收藏率（collect_rate）相同：实用干货价值+结构清晰+可信度高"
     },
 }
 

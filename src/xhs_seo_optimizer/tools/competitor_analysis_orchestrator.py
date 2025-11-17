@@ -5,6 +5,7 @@ perform complex multi-step analysis with a single tool call.
 """
 
 import logging
+from pathlib import Path
 from typing import List, Type
 from pydantic import BaseModel, Field
 
@@ -124,8 +125,20 @@ class CompetitorAnalysisOrchestrator(BaseTool):
                        f"{len(title_patterns)} title, {len(cover_patterns)} cover, "
                        f"{len(content_patterns)} content, {len(tag_patterns)} tag")
 
+            # Save report to local file
+            output_dir = Path.cwd() / "output"
+            output_dir.mkdir(exist_ok=True)
+
+            output_path = output_dir / f"competitor_analysis_{keyword[:20]}.json"
+            report_json = report.model_dump_json(indent=2)
+
+            with open(output_path, 'w', encoding='utf-8') as f:
+                f.write(report_json)
+
+            logger.info(f"Report saved to: {output_path}")
+
             # Return JSON
-            return report.model_dump_json(indent=2)
+            return report_json
 
         except Exception as e:
             logger.error(f"Competitor analysis failed: {e}", exc_info=True)

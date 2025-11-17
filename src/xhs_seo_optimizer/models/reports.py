@@ -18,9 +18,12 @@ class FeaturePattern(BaseModel):
     """单个内容模式的统计分析 (Statistical analysis of a content pattern).
 
     Represents a discovered pattern in high-performing notes with:
-    - Statistical evidence (prevalence, z-score, p-value)
+    - Direct prevalence evidence (% of target notes with this feature)
     - Concrete examples from real notes
     - LLM-generated insights (why it works, creation formula)
+
+    Uses Direct Prevalence Analysis - target notes are curated top performers,
+    not a diverse sample, so we identify patterns by direct prevalence (≥70%).
     """
 
     feature_name: str = Field(
@@ -36,13 +39,7 @@ class FeaturePattern(BaseModel):
     )
 
     prevalence_pct: float = Field(
-        description="高分组中的流行度百分比 (% in high-scoring group)",
-        ge=0.0,
-        le=100.0
-    )
-
-    baseline_pct: float = Field(
-        description="基线组中的流行度百分比 (% in baseline group)",
+        description="在目标笔记中的流行度百分比 (% in target notes)",
         ge=0.0,
         le=100.0
     )
@@ -53,26 +50,11 @@ class FeaturePattern(BaseModel):
     )
 
     statistical_evidence: str = Field(
-        description="统计证据摘要 (e.g., 'z=3.2, p<0.001, n=85/100')"
+        description="统计证据摘要 (e.g., 'prevalence=85.0%, n=17/20')"
     )
 
-    z_score: float = Field(
-        description="Z分数 (Z-score for prevalence difference)"
-    )
-
-    p_value: float = Field(
-        description="P值 (P-value for significance test)",
-        ge=0.0,
-        le=1.0
-    )
-
-    sample_size_high: int = Field(
-        description="高分组样本量 (Sample size in high-scoring group)",
-        gt=0
-    )
-
-    sample_size_baseline: int = Field(
-        description="基线组样本量 (Sample size in baseline group)",
+    sample_size: int = Field(
+        description="样本量 (Total sample size of target notes)",
         gt=0
     )
 

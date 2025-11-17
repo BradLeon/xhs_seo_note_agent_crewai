@@ -262,52 +262,69 @@ METRIC_FEATURE_ATTRIBUTION = {
 }
 ```
 
-### Layer 2: Statistical Prevalence Analysis
+### Layer 2: Direct Prevalence Analysis
+
+**Key Design Decision:**
+`target_notes` are already curated high-quality content (top search results), not a diverse sample. Therefore, we use **Direct Prevalence Analysis** instead of split+compare approach.
+
+**Rationale:**
+- Input is pre-filtered优质内容(排序靠前的笔记)
+- Splitting top performers into "more优质" vs "less优质" groups yields minimal difference
+- Statistical significance testing is inappropriate without a proper control group
+- Instead: If a feature appears in ≥70% of target_notes, it's a success pattern
 
 For each metric and its relevant features:
 
 ```python
-def calculate_pattern_prevalence(
+def calculate_direct_prevalence(
     notes: List[Note],
     metric: str,
-    feature_extractor: Callable
+    relevant_features: List[str]
 ) -> Dict[str, PatternStats]:
     """
-    Calculate statistical significance of patterns.
+    Calculate direct prevalence of features in curated high-quality notes.
+
+    Args:
+        notes: Target notes (already pre-filtered top performers)
+        metric: Metric name (e.g., 'ctr', 'comment_rate')
+        relevant_features: Features affecting this metric (from Layer 1)
 
     Returns:
         {
-            "pattern_name": {
-                "prevalence_high": 85.0,  # % in top 25%
-                "prevalence_baseline": 42.0,  # % in rest
-                "z_score": 3.2,
-                "p_value": 0.0014,
-                "sample_high": 21,  # n in top 25%
-                "sample_baseline": 63  # n in rest
+            "feature_name": {
+                "prevalence_pct": 85.0,  # % in all target notes
+                "count": 17,  # notes with feature
+                "total": 20,  # total notes
+                "is_pattern": True  # prevalence >= 70%
             }
         }
     """
-    # Sort notes by metric
-    sorted_notes = sorted(notes, key=lambda n: getattr(n.prediction, metric), reverse=True)
+    # Get notes with this metric (no splitting)
+    notes_with_metric = [n for n in notes if has_metric(n, metric)]
 
-    # Split into top 25% (high) vs rest (baseline)
-    cutoff = len(sorted_notes) // 4
-    high_group = sorted_notes[:cutoff]
-    baseline_group = sorted_notes[cutoff:]
-
-    # Extract features and calculate prevalence
+    # For each relevant feature, calculate direct prevalence
     patterns = {}
-    for note in notes:
-        features = feature_extractor(note)
-        # Count pattern occurrences in each group
-        ...
+    for feature_name in relevant_features:
+        feature_count = sum(1 for n in notes_with_metric if has_feature(n, feature_name))
+        total = len(notes_with_metric)
+        prevalence_pct = (feature_count / total * 100) if total > 0 else 0
 
-    # Calculate z-score for proportion difference
-    # p-value from two-tailed z-test
-    ...
+        # Pattern identified if prevalence >= threshold
+        is_pattern = prevalence_pct >= 70.0  # (or 50% for small samples)
+
+        patterns[feature_name] = {
+            "prevalence_pct": prevalence_pct,
+            "count": feature_count,
+            "total": total,
+            "is_pattern": is_pattern
+        }
 
     return patterns
 ```
+
+**No Statistical Testing:**
+- No z-score, no p-value (no control group to compare against)
+- Simple threshold-based detection: prevalence ≥ 70% → pattern
 
 ### Layer 3: LLM Formula Synthesis
 

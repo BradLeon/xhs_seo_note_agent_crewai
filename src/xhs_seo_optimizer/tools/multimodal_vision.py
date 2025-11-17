@@ -6,6 +6,7 @@ Supports multi-image analysis (cover image + inner images).
 
 import os
 import json
+import logging
 from typing import Any, Dict, List, Optional
 from openai import OpenAI
 from crewai.tools import BaseTool
@@ -13,6 +14,8 @@ from pydantic import Field
 
 from ..models.analysis_results import VisionAnalysisResult
 from ..models.note import NoteMetaData
+
+logger = logging.getLogger(__name__)
 
 
 class MultiModalVisionTool(BaseTool):
@@ -164,6 +167,7 @@ class MultiModalVisionTool(BaseTool):
 
             # Extract and parse response
             content = response.choices[0].message.content
+
             return self._parse_vision_response(content)
 
         except Exception as e:
@@ -266,14 +270,19 @@ class MultiModalVisionTool(BaseTool):
                 json_start = content.find("```json") + 7
                 json_end = content.find("```", json_start)
                 json_str = content[json_start:json_end].strip()
+                logger.info("DEBUG: Extracted JSON from ```json block")
             elif "```" in content:
                 json_start = content.find("```") + 3
                 json_end = content.find("```", json_start)
                 json_str = content[json_start:json_end].strip()
+                logger.info("DEBUG: Extracted JSON from ``` block")
             else:
                 json_str = content.strip()
+                logger.info("DEBUG: Using full content as JSON")
+
 
             data = json.loads(json_str)
+            logger.info("DEBUG: JSON parsing successful!")
 
             # Define all required fields with defaults
             required_fields = {
@@ -309,7 +318,15 @@ class MultiModalVisionTool(BaseTool):
                 # Type conversions and cleaning
                 if isinstance(default, str):
                     # Convert to string if needed
-                    if isinstance(value, (int, float, bool)):
+                    if isinstance(value, list):
+                        # Handle lists: join elements with newline or comma
+                        if field in ["text_ocr_content", "text_ocr_content_highlight"]:
+                            # For OCR content, join with newline for readability
+                            result[field] = "\n".join(str(v) for v in value if v)
+                        else:
+                            # For other fields, join with comma
+                            result[field] = ", ".join(str(v) for v in value if v)
+                    elif isinstance(value, (int, float, bool)):
                         result[field] = str(value)
                     elif value == "null" or value == "None":
                         result[field] = default
@@ -341,6 +358,14 @@ class MultiModalVisionTool(BaseTool):
             return result
 
         except json.JSONDecodeError as e:
+            logger.error("=" * 80)
+            logger.error("JSON PARSING ERROR")
+            logger.error("=" * 80)
+            logger.error(f"Error: {str(e)}")
+            logger.error(f"Error position: line {e.lineno} column {e.colno} (char {e.pos})")
+            logger.error(f"Error message: {e.msg}")
+            logger.error("=" * 80)
             raise ValueError(f"Failed to parse JSON response: {str(e)}") from e
         except Exception as e:
+            logger.error(f"Unexpected error during parsing: {str(e)}")
             raise ValueError(f"Failed to parse vision response: {str(e)}") from e
