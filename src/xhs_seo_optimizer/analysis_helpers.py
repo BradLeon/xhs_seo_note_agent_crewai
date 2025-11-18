@@ -12,7 +12,9 @@ import logging
 from typing import List, Dict, Tuple, Optional, Any
 from datetime import datetime
 import json
+import os
 
+import numpy as np
 import scipy.stats as stats
 
 from xhs_seo_optimizer.models.note import Note
@@ -21,8 +23,15 @@ from xhs_seo_optimizer.models.analysis_results import (
     TextAnalysisResult,
     VisionAnalysisResult,
 )
-from xhs_seo_optimizer.models.reports import FeaturePattern
-from xhs_seo_optimizer.attribution import get_relevant_features, get_all_metrics
+from xhs_seo_optimizer.models.reports import (
+    FeatureAnalysis,
+    MetricSuccessProfile,
+)
+from xhs_seo_optimizer.attribution import (
+    get_relevant_features,
+    get_all_metrics,
+    get_attribution_rationale,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -161,167 +170,454 @@ def extract_features_matrix(notes: List[Note]) -> Dict[str, Dict]:
     return features_matrix
 
 
-# === Task 3.4: Identify Patterns (Layer 1 & 2) ===
+# === Task 3.6: Generate Summary Insights ===
 
-def identify_patterns(
-    notes: List[Note],
-    features_matrix: Dict[str, Dict],
-    aggregated_stats: AggregatedMetrics,
-    min_prevalence_pct: float = 70.0,
-    max_p_value: float = 0.05
-) -> List[FeaturePattern]:
-    """Identify content patterns from target notes using Direct Prevalence Analysis.
+def generate_summary_insights(
+    metric_profiles: List[MetricSuccessProfile]
+) -> Tuple[List[str], str]:
+    """生成跨指标的汇总洞察 (Generate cross-metric summary insights).
 
-    This implements Layer 1 (Domain Rules) and Layer 2 (Direct Prevalence)
-    of the hybrid attribution engine.
-
-    **Key Design Decision:**
-    Target_notes are already curated high-quality content (top search results),
-    not a diverse sample. Therefore, we use Direct Prevalence Analysis instead of
-    split+compare approach:
-    - If a feature appears in ≥70% of target_notes, it's a success pattern
-    - No need for statistical significance testing (no control group)
+    Synthesizes key success factors and viral formula summary from metric-centric profiles
+    using LLM to provide holistic, actionable insights across all prediction metrics.
 
     Args:
-        notes: List of target notes (pre-filtered high-quality content)
-        features_matrix: Feature data for each note
-        aggregated_stats: Baseline statistics
-        min_prevalence_pct: Minimum prevalence threshold (default 70%)
-        max_p_value: Not used in new logic (kept for API compatibility)
+        metric_profiles: List of metric success profiles (one per prediction metric)
 
     Returns:
-        List of FeaturePattern objects (without LLM fields filled)
+        Tuple of (key_success_factors, viral_formula_summary)
+        - key_success_factors: 3-5 concise cross-metric success factors
+        - viral_formula_summary: Holistic summary (>50 chars, focused and impactful)
     """
-    logger.info("Identifying patterns using Direct Prevalence Analysis...")
-    logger.info(f"Target notes are curated high-quality content, not diverse sample")
+    logger.info(f"Generating cross-metric summary insights from {len(metric_profiles)} metric profiles...")
 
-    sample_size = len(notes)
-
-    # Adjust threshold for small samples
-    is_small_sample = sample_size < 10
-    if is_small_sample:
-        adjusted_prevalence_pct = 50.0  # More lenient for small samples
-        logger.warning(
-            f"Small sample size detected ({sample_size} notes). "
-            f"Using adjusted threshold: {adjusted_prevalence_pct}% (vs {min_prevalence_pct}%)"
+    # Fallback for no profiles
+    if len(metric_profiles) == 0:
+        key_success_factors = [
+            "样本量不足，无法识别显著模式",
+            "建议增加分析笔记数量",
+            "或降低统计显著性阈值"
+        ]
+        viral_formula_summary = (
+            "由于样本量不足或统计显著性要求较高，本次分析未能识别出明确的成功模式。"
+            "建议增加目标笔记数量或调整分析参数后重新分析。"
         )
+        return key_success_factors, viral_formula_summary
+
+    # Collect metric narratives and cross-metric feature statistics
+    metric_narratives = []
+    all_features = {}  # feature_name -> [{"metric": ..., "prevalence": ..., "formula": ...}]
+
+    for profile in metric_profiles:
+        metric_narratives.append({
+            "metric": profile.metric_name,
+            "narrative": profile.metric_success_narrative,
+            "sample_size": profile.sample_size,
+            "variance_level": profile.variance_level
+        })
+
+        # Collect cross-metric feature statistics
+        for feature_name, analysis in profile.feature_analyses.items():
+            if feature_name not in all_features:
+                all_features[feature_name] = []
+            all_features[feature_name].append({
+                "metric": profile.metric_name,
+                "prevalence": analysis.prevalence_pct,
+                "formula": analysis.creation_formula,
+                "why_it_works": analysis.why_it_works
+            })
+
+    # Build LLM prompt for cross-metric synthesis
+    prompt = f"""你是小红书内容优化专家。根据以下各指标的成功模式分析，提炼跨指标的关键成功要素和整体爆款公式。
+
+## 各指标分析结果
+
+{json.dumps(metric_narratives, ensure_ascii=False, indent=2)}
+
+## 跨指标特征统计（前10个高频特征）
+
+{json.dumps(dict(list(all_features.items())[:10]), ensure_ascii=False, indent=2)}
+
+## 任务
+
+请生成精炼、重点突出的跨指标汇总：
+
+1. **key_success_factors**（3-5条）：
+   - 跨metrics整合最关键的成功要素
+   - 每条一句话，突出核心机制和量化效果
+   - 示例：["疑问句标题+情绪化封面组合驱动点击率提升30%+", "结尾互动引导CTA使评论率提高50%+"]
+
+2. **viral_formula_summary**（2-3句话）：
+   - 说明各指标如何协同驱动整体表现
+   - 突出小红书平台机制和用户心理
+   - 精炼整洁，避免冗长，聚焦核心公式
+
+请以JSON格式返回（严格遵守格式）：
+```json
+{{
+  "key_success_factors": ["要素1", "要素2", "要素3"],
+  "viral_formula_summary": "整体总结（2-3句话）"
+}}
+```
+"""
+
+    try:
+        # Call LLM via OpenRouter
+        client = OpenAI(
+            base_url="https://openrouter.ai/api/v1",
+            api_key=os.getenv("OPENROUTER_API_KEY")
+        )
+
+        response = client.chat.completions.create(
+            model="anthropic/claude-3.5-sonnet",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3
+        )
+
+        content = response.choices[0].message.content
+
+        # Parse response (handle markdown code blocks)
+        if "```json" in content:
+            json_start = content.find("```json") + 7
+            json_end = content.find("```", json_start)
+            json_str = content[json_start:json_end].strip()
+        elif "```" in content:
+            json_start = content.find("```") + 3
+            json_end = content.find("```", json_start)
+            json_str = content[json_start:json_end].strip()
+        else:
+            json_str = content.strip()
+
+        data = json.loads(json_str)
+
+        key_factors = data["key_success_factors"]
+        formula_summary = data["viral_formula_summary"]
+
+        # Validate
+        if not isinstance(key_factors, list) or not (3 <= len(key_factors) <= 5):
+            raise ValueError(f"key_success_factors must have 3-5 items, got {len(key_factors)}")
+        if len(formula_summary) < 50:
+            raise ValueError(f"viral_formula_summary too short: {len(formula_summary)} chars")
+
+        logger.info("✓ Cross-metric summary insights generated via LLM")
+        return key_factors, formula_summary
+
+    except Exception as e:
+        logger.warning(f"LLM synthesis failed: {e}, using fallback")
+
+        # Fallback: simple heuristic-based summary
+        key_factors = []
+        for feature_name, metrics_data in list(all_features.items())[:5]:
+            avg_prevalence = sum(m["prevalence"] for m in metrics_data) / len(metrics_data)
+            metrics_affected = ", ".join([m["metric"] for m in metrics_data])
+            factor = f"{feature_name}影响{len(metrics_data)}个指标（{metrics_affected}），平均流行度{avg_prevalence:.1f}%"
+            key_factors.append(factor)
+
+        # Ensure 3-5 factors
+        while len(key_factors) < 3:
+            key_factors.append(f"待分析的成功因素 {len(key_factors) + 1}")
+        key_factors = key_factors[:5]
+
+        formula_summary = (
+            f"基于 {len(metric_profiles)} 个指标的深度分析，"
+            f"发现 {len(all_features)} 个跨指标特征模式。"
+            f"高表现笔记在标题、封面、内容、标签等维度均呈现显著特征，具有可复制性。"
+        )
+
+        return key_factors, formula_summary
+
+
+# === Utility Functions ===
+
+def get_current_timestamp() -> str:
+    """Get current timestamp in ISO 8601 format.
+
+    Returns:
+        ISO 8601 timestamp string
+    """
+    return datetime.utcnow().isoformat() + 'Z'
+
+
+# ============================================================================
+# Metric-Centric Analysis Functions (New Architecture)
+# ============================================================================
+
+
+def filter_notes_by_metric_variance(
+    notes: List[Note],
+    metric: str,
+    variance_threshold: float = 0.3
+) -> Tuple[List[Note], str]:
+    """根据指标方差过滤笔记，识别高表现者 (Filter notes by metric variance to identify high performers).
+
+    **设计理念**：
+    - 低方差（CV < threshold）：笔记性能相近，使用全部笔记
+    - 高方差（CV >= threshold）：笔记性能差异大，仅使用top 50%高分笔记
+
+    这样可以避免低分笔记稀释pattern分析质量，同时保证小样本的统计有效性。
+
+    Args:
+        notes: 所有target_notes
+        metric: 指标名称（如 'ctr', 'comment_rate'）
+        variance_threshold: 变异系数阈值（默认0.3）
+
+    Returns:
+        (filtered_notes, variance_level)
+        - filtered_notes: 过滤后的笔记列表
+        - variance_level: 'low' | 'high' | 'low_sample_fallback'
+
+    Logic:
+        1. 提取metric值
+        2. 计算变异系数 CV = std/mean
+        3. 如果 CV < threshold:
+              variance_level = 'low'
+              return 全部笔记（性能相近，无需过滤）
+           否则:
+              variance_level = 'high'
+              计算中位数
+              return 指标值 >= 中位数的笔记（top 50%）
+        4. 容错：如果过滤后 < MIN_SAMPLE_SIZE，回退到全部笔记
+
+    Raises:
+        ValueError: If metric is invalid or no notes have the metric
+    """
+    # 1. 提取metric values
+    metric_values = []
+    for note in notes:
+        try:
+            value = getattr(note.prediction, metric)
+            if value is not None:
+                metric_values.append((note, value))
+        except AttributeError:
+            continue
+
+    if len(metric_values) < AnalysisConfig.MIN_SAMPLE_SIZE:
+        logger.warning(f"Insufficient data for {metric}: only {len(metric_values)} notes (minimum {AnalysisConfig.MIN_SAMPLE_SIZE} required)")
+        return [], 'undefined'
+
+    # 2. 计算统计量
+    values = np.array([v for _, v in metric_values])
+    mean = np.mean(values)
+    std = np.std(values)
+    cv = std / mean if mean > 0 else 0  # 变异系数 (Coefficient of Variation)
+
+    logger.info(f"{metric}: mean={mean:.4f}, std={std:.4f}, CV={cv:.4f}")
+
+    # 3. 根据方差水平过滤
+    if cv < variance_threshold:
+        # 低方差：使用全部笔记
+        variance_level = 'low'
+        filtered = [note for note, _ in metric_values]
+        logger.info(f"  Low variance detected (CV={cv:.4f} < {variance_threshold}), using all {len(filtered)} notes")
     else:
-        adjusted_prevalence_pct = min_prevalence_pct
+        # 高方差：使用top 50%
+        variance_level = 'high'
+        median = np.median(values)
+        filtered = [note for note, value in metric_values if value >= median]
+        logger.info(f"  High variance detected (CV={cv:.4f} >= {variance_threshold}), using top {len(filtered)} notes (>= median={median:.4f})")
 
-    logger.info("=" * 80)
-    logger.info("PATTERN DETECTION CONFIGURATION")
-    logger.info("=" * 80)
-    logger.info(f"Sample size: {sample_size} notes")
-    logger.info(f"Detection method: Direct Prevalence Analysis (no split)")
-    logger.info(f"Prevalence threshold: {adjusted_prevalence_pct}%")
-    logger.info(f"Rationale: target_notes are already top performers")
-    logger.info("=" * 80)
+    # 4. 容错：如果过滤后太少，回退到全部笔记
+    if len(filtered) < AnalysisConfig.MIN_SAMPLE_SIZE:
+        logger.warning(f"  Only {len(filtered)} notes after filtering (< {AnalysisConfig.MIN_SAMPLE_SIZE})")
+        logger.warning(f"  Falling back to all {len(metric_values)} notes")
+        filtered = [note for note, _ in metric_values]
+        variance_level = 'low_sample_fallback'
 
-    patterns = []
+    return filtered, variance_level
+# This is a temporary file containing the remaining 4 metric-centric functions
+# Will be added to analysis_helpers.py
 
-    # Get all metrics that have attribution rules
-    metrics = get_all_metrics()
+def _build_metric_analysis_prompt(
+    metric: str,
+    rationale: str,
+    feature_data: Dict[str, Dict],
+    sample_size: int,
+    variance_level: str,
+    keyword: str = ""
+) -> str:
+    """构建指标级别的综合LLM提示词 (Build comprehensive LLM prompt for metric analysis).
 
-    for metric in metrics:
-        if metric not in aggregated_stats.prediction_stats:
-            logger.warning(f"Skipping metric {metric}: not found in aggregated stats")
-            continue
+    **关键改进**：
+    - 一次性展示该指标的所有相关特征
+    - 包含真实案例（而非仅特征名）
+    - 要求LLM生成 metric_success_narrative（整体叙述）
+    - 强调特征之间的协同作用
+    - 包含关键词上下文信息
 
-        logger.info(f"Analyzing patterns for metric: {metric}")
+    Args:
+        metric: 指标名称（如 'ctr'）
+        rationale: 该指标的平台机制说明（来自attribution.py）
+        feature_data: {feature_name: {'prevalence_count': int, 'prevalence_pct': float, 'examples': List[str]}}
+        sample_size: 分析的笔记数
+        variance_level: 方差水平（'low' | 'high' | 'low_sample_fallback'）
+        keyword: 目标关键词
 
-        # Layer 1: Get relevant features for this metric (from domain knowledge)
-        relevant_features = get_relevant_features(metric)
+    Returns:
+        中文LLM提示词
+    """
+    # 构建特征列表（带真实案例）
+    features_section = ""
+    for i, (feature_name, data) in enumerate(feature_data.items(), 1):
+        examples_str = "\n      ".join([f"• {ex}" for ex in data['examples'][:AnalysisConfig.MAX_EXAMPLES_BATCH_PROMPT]])
 
-        # Get notes with this metric value (for logging and sorting)
-        metric_values = []
-        for note in notes:
-            try:
-                value = getattr(note.prediction, metric)
-                if value is not None:
-                    metric_values.append((note, value))
-            except AttributeError:
-                continue
+        features_section += f"""
+**特征{i}: {feature_name}**
+- 流行度: {data['prevalence_pct']:.1f}% ({data['prevalence_count']}/{sample_size} 笔记)
+- 真实案例:
+      {examples_str}
+"""
 
-        if len(metric_values) < AnalysisConfig.MIN_SAMPLE_SIZE:
-            logger.warning(f"Insufficient data for {metric}: only {len(metric_values)} notes (minimum {AnalysisConfig.MIN_SAMPLE_SIZE} required)")
-            continue
+    # 构建关键词上下文
+    keyword_context = f"- 关键词: **{keyword}**（这些特征来自该关键词下的高排序笔记）\n" if keyword else ""
 
-        # Sort by metric value for logging (highest first)
-        metric_values.sort(key=lambda x: x[1], reverse=True)
-        all_notes_with_metric = [note for note, _ in metric_values]
+    prompt = f"""你是小红书内容策略专家。请为指标 **{metric}** 进行综合成功因素分析。
 
-        logger.info("-" * 80)
-        logger.info(f"METRIC: {metric}")
-        logger.info("-" * 80)
-        logger.info(f"Total notes with {metric} data: {len(metric_values)}")
-        logger.info(f"Metric values (sorted, note_id: value):")
-        for note, value in metric_values[:AnalysisConfig.MAX_METRIC_VALUES_DISPLAY]:
-            logger.info(f"  {note.note_id[:16]}...: {value:.6f}")
-        if len(metric_values) > AnalysisConfig.MAX_METRIC_VALUES_DISPLAY:
-            logger.info(f"  ... and {len(metric_values) - AnalysisConfig.MAX_METRIC_VALUES_DISPLAY} more")
-        logger.info(f"\nRelevant features to check ({len(relevant_features)}): {relevant_features}")
-        logger.info("-" * 80)
+**指标说明**：
+{keyword_context}- 指标名称: {metric}
+- 平台机制: {rationale}
+- 分析样本: {sample_size} 条高质量笔记 (方差水平: {variance_level})
 
-        # Layer 2: Calculate direct prevalence for each relevant feature
-        for feature_name in relevant_features:
-            feature_count = 0
-            examples = []
+**关键特征数据**（来自真实笔记分析）：
+{features_section}
 
-            # Count how many notes have this feature
-            for note in all_notes_with_metric:
-                if note.note_id not in features_matrix:
-                    continue
+**任务**：
+请为每个特征生成分析，并提供指标级别的综合叙述。
 
-                has_feature = _check_feature_presence(
-                    feature_name,
-                    features_matrix[note.note_id]
-                )
+**输出格式**（JSON）：
+{{
+  "metric_success_narrative": "对{metric}成功的整体解释（2-3句话，说明这些特征如何协同驱动该指标）",
+  "feature_analyses": {{
+    "feature_name_1": {{
+      "why_it_works": "为什么这个特征对{metric}有效（心理学+平台算法+用户行为角度）",
+      "creation_formula": "可直接套用的创作模板（具体到可以立即执行）",
+      "key_elements": ["要素1（包含数字/标准）", "要素2", "要素3"]
+    }},
+    "feature_name_2": {{ ... }},
+    ...
+  }}
+}}
 
-                if has_feature:
-                    feature_count += 1
-                    if len(examples) < AnalysisConfig.MAX_EXAMPLES_PER_PATTERN:
-                        examples.append(_get_feature_example(
-                            feature_name,
-                            note,
-                            features_matrix[note.note_id]
-                        ))
+**质量要求**：
+1. why_it_works 必须解释该特征为何影响 **{metric}** （而非其他指标）
+2. creation_formula 必须具体到创作者看了就能模仿
+3. key_elements 每一条都要可执行，最好包含具体数字或格式要求
+4. 所有分析基于上述真实案例，不要臆测
+5. feature_analyses 必须包含所有 {len(feature_data)} 个特征
 
-            # Calculate prevalence
-            total_notes = len(all_notes_with_metric)
-            prevalence_pct = (feature_count / total_notes * 100) if total_notes > 0 else 0
+开始分析："""
 
-            logger.info(f"\n  Feature: {feature_name}")
-            logger.info(f"    Prevalence: {feature_count}/{total_notes} ({prevalence_pct:.1f}%)")
-            logger.info(f"    Threshold: {adjusted_prevalence_pct}%")
-            logger.info(f"    Result: {'PASS ✓' if prevalence_pct >= adjusted_prevalence_pct else 'FAIL ✗'}")
+    return prompt
 
-            # Check if prevalence meets threshold
-            if prevalence_pct >= adjusted_prevalence_pct:
-                feature_type = _get_feature_type(feature_name)
 
-                # Create pattern (without LLM fields - those come in Layer 3)
-                pattern = FeaturePattern(
-                    feature_name=feature_name,
-                    feature_type=feature_type,
-                    description=f"{feature_name}在优质{metric}笔记中普遍存在",
-                    prevalence_pct=prevalence_pct,
-                    affected_metrics={metric: prevalence_pct},
-                    statistical_evidence=f"prevalence={prevalence_pct:.1f}%, n={feature_count}/{total_notes}",
-                    sample_size=total_notes,
-                    examples=examples if examples else [f"示例：{feature_name}"],
-                    # LLM fields placeholder - will be filled in Layer 3
-                    why_it_works="待LLM分析",
-                    creation_formula="待生成",
-                    key_elements=["要素1", "要素2", "要素3"]
-                )
+def _parse_metric_analysis_response(
+    content: str,
+    expected_features: List[str]
+) -> Dict[str, Any]:
+    """解析LLM的metric-level响应，带容错 (Parse LLM response for metric analysis with fallbacks).
 
-                patterns.append(pattern)
-                logger.info(f"    ✓✓✓ PATTERN FOUND! ✓✓✓")
-                logger.info(f"    Feature '{feature_name}' appears in {prevalence_pct:.1f}% of target notes")
+    **容错机制**：
+    - 支持多种JSON提取方式（纯JSON、markdown代码块）
+    - 检查缺失特征，自动补充降级分析
+    - 验证字段完整性
+    - 格式错误时返回fallback响应
 
-    logger.info(f"Pattern identification complete: {len(patterns)} patterns found")
+    Args:
+        content: LLM响应内容
+        expected_features: 期待的特征列表
 
-    return patterns
+    Returns:
+        {
+            'metric_success_narrative': str,
+            'feature_analyses': {
+                feature_name: {'why_it_works': str, 'creation_formula': str, 'key_elements': List[str]}
+            }
+        }
+
+    Raises:
+        ValueError: If JSON parsing completely fails
+    """
+    try:
+        # 1. 提取JSON（支持多种格式）
+        if "```json" in content:
+            json_start = content.find("```json") + 7
+            json_end = content.find("```", json_start)
+            json_str = content[json_start:json_end].strip()
+            logger.info("Extracted JSON from ```json block")
+        elif "```" in content:
+            json_start = content.find("```") + 3
+            json_end = content.find("```", json_start)
+            json_str = content[json_start:json_end].strip()
+            logger.info("Extracted JSON from ``` block")
+        else:
+            json_str = content.strip()
+            logger.info("Using full content as JSON")
+
+        data = json.loads(json_str)
+        logger.info("JSON parsing successful!")
+
+        # 2. 验证必需字段
+        if 'feature_analyses' not in data:
+            logger.error("Missing 'feature_analyses' in response")
+            return _create_fallback_response(expected_features)
+
+        if 'metric_success_narrative' not in data:
+            logger.warning("Missing 'metric_success_narrative', using default")
+            data['metric_success_narrative'] = "该指标受多个内容特征协同影响（LLM分析缺失）"
+
+        # 3. 检查缺失特征
+        missing_features = set(expected_features) - set(data['feature_analyses'].keys())
+        if missing_features:
+            logger.warning(f"LLM response missing {len(missing_features)} features: {missing_features}")
+
+            # 为缺失特征添加降级分析
+            for feature in missing_features:
+                data['feature_analyses'][feature] = {
+                    'why_it_works': f"{feature}在高质量笔记中广泛存在（LLM分析缺失）",
+                    'creation_formula': f"遵循{feature}最佳实践",
+                    'key_elements': ["参考成功案例", "测试优化", "持续迭代"]
+                }
+
+        # 4. 验证每个feature_analysis的字段
+        for feature_name, analysis in data['feature_analyses'].items():
+            required_fields = ['why_it_works', 'creation_formula', 'key_elements']
+            for field in required_fields:
+                if field not in analysis:
+                    if field == 'key_elements':
+                        analysis[field] = ["参考统计数据", "观察高分案例", "测试优化"]
+                    else:
+                        analysis[field] = "待完善"
+
+        return data
+
+    except json.JSONDecodeError as e:
+        logger.error(f"JSON parsing failed: {e}")
+        logger.error(f"Content preview: {content[:200]}...")
+        return _create_fallback_response(expected_features)
+    except Exception as e:
+        logger.error(f"Unexpected error during parsing: {e}")
+        return _create_fallback_response(expected_features)
+
+
+def _create_fallback_response(expected_features: List[str]) -> Dict[str, Any]:
+    """创建降级响应 (Create fallback response when LLM parsing fails).
+
+    Args:
+        expected_features: 期待的特征列表
+
+    Returns:
+        Fallback response dict
+    """
+    feature_analyses = {}
+    for feature in expected_features:
+        feature_analyses[feature] = {
+            'why_it_works': f"{feature}在高质量笔记中广泛存在（统计验证）",
+            'creation_formula': f"采用{feature}模式，参考最佳案例",
+            'key_elements': ["研究成功案例", "理解目标用户偏好", "测试并优化"]
+        }
+
+    return {
+        'metric_success_narrative': "该指标受多个内容特征协同影响",
+        'feature_analyses': feature_analyses
+    }
 
 
 def _check_feature_presence(feature_name: str, note_features: Dict) -> bool:
@@ -492,104 +788,118 @@ def _get_feature_type(feature_name: str) -> str:
         return "content"
 
 
-def _calculate_pattern_stats(
-    high_count: int,
-    high_total: int,
-    baseline_count: int,
-    baseline_total: int
-) -> Tuple[float, float, float]:
-    """Calculate statistical metrics for a pattern.
+def analyze_metric_success(
+    metric: str,
+    filtered_notes: List[Note],
+    features_matrix: Dict[str, Dict],
+    variance_level: str,
+    keyword: str = ""
+) -> MetricSuccessProfile:
+    """在一次LLM调用中分析指标的所有相关特征 (Analyze all features for a metric in ONE LLM call).
+
+    **核心优势**：
+    - 一次LLM调用处理该指标的所有特征
+    - LLM看到完整上下文，生成更连贯的分析
+    - 包含 metric_success_narrative（整体叙述）
+    - 减少API调用次数和成本
+    - 提供关键词上下文信息
+
+    **工作流程**：
+    1. 获取 relevant_features（来自attribution.py）
+    2. 计算每个特征的prevalence
+    3. 收集真实案例
+    4. 构建综合LLM提示词（包含关键词信息）
+    5. 调用LLM一次
+    6. 解析响应为 MetricSuccessProfile
 
     Args:
-        high_count: Number of high-group notes with pattern
-        high_total: Total notes in high group
-        baseline_count: Number of baseline notes with pattern
-        baseline_total: Total notes in baseline group
+        metric: 指标名称（如 'ctr'）
+        filtered_notes: 方差过滤后的笔记
+        features_matrix: 预计算的特征矩阵
+        variance_level: 方差水平
+        keyword: 目标关键词（用于上下文说明）
 
     Returns:
-        Tuple of (prevalence_pct, z_score, p_value)
+        MetricSuccessProfile
+
+    Raises:
+        RuntimeError: If analysis fails
     """
-    prevalence_pct = (high_count / high_total * 100) if high_total > 0 else 0
-    baseline_pct = (baseline_count / baseline_total * 100) if baseline_total > 0 else 0
+    logger.info(f"Analyzing metric: {metric}")
 
-    # Z-test for proportions
-    if high_total > 0 and baseline_total > 0:
-        p_high = high_count / high_total
-        p_baseline = baseline_count / baseline_total
-        p_combined = (high_count + baseline_count) / (high_total + baseline_total)
+    # 1. 获取attribution规则
+    relevant_features = get_relevant_features(metric)
+    rationale = get_attribution_rationale(metric)
 
-        if p_combined > 0 and p_combined < 1:
-            se = (p_combined * (1 - p_combined) * (1/high_total + 1/baseline_total)) ** 0.5
-            z_score = (p_high - p_baseline) / se if se > 0 else 0
-            p_value = 2 * (1 - stats.norm.cdf(abs(z_score)))  # Two-tailed test
-        else:
-            z_score = 0
-            p_value = 1.0
-    else:
-        z_score = 0
-        p_value = 1.0
+    logger.info(f"  {len(relevant_features)} relevant features")
+    logger.info(f"  {len(filtered_notes)} notes (variance: {variance_level})")
 
-    return prevalence_pct, z_score, p_value
+    # 2. 收集feature_data
+    feature_data = {}
+    for feature_name in relevant_features:
+        prevalence_count = 0
+        examples = []
 
+        for note in filtered_notes:
+            if note.note_id not in features_matrix:
+                continue
 
-# === Task 3.5: Synthesize Formulas (Layer 3) ===
+            has_feature = _check_feature_presence(
+                feature_name,
+                features_matrix[note.note_id]
+            )
 
-def synthesize_formulas(
-    patterns: List[FeaturePattern],
-    notes: List[Note]
-) -> List[FeaturePattern]:
-    """Use LLM to generate explanations and formulas for patterns.
+            if has_feature:
+                prevalence_count += 1
+                if len(examples) < AnalysisConfig.MAX_EXAMPLES_BATCH_PROMPT:
+                    examples.append(_get_feature_example(
+                        feature_name,
+                        note,
+                        features_matrix[note.note_id]
+                    ))
 
-    This implements Layer 3 (LLM Validation) of the hybrid attribution engine.
+        prevalence_pct = (prevalence_count / len(filtered_notes) * 100) if filtered_notes else 0
 
-    Args:
-        patterns: List of patterns with statistical evidence
-        notes: Original notes for examples
+        feature_data[feature_name] = {
+            'prevalence_count': prevalence_count,
+            'prevalence_pct': prevalence_pct,
+            'examples': examples if examples else [f"{feature_name}: (无具体案例)"]
+        }
 
-    Returns:
-        Updated list of patterns with LLM-generated fields filled
-    """
-    logger.info(f"Synthesizing formulas for {len(patterns)} patterns...")
+        logger.info(f"    {feature_name}: {prevalence_pct:.1f}% ({prevalence_count}/{len(filtered_notes)})")
 
-    # Import OpenAI client and environment variables
-    import os
-    import json
-    from openai import OpenAI
-
-    # Get API configuration
-
-    api_key = os.getenv("OPENROUTER_API_KEY", "")
-    model = os.getenv("OPENROUTER_TEXT_MODEL", "qwen/qwen3-235b-a22b-thinking-2507")
-    site_url = os.getenv("OPENROUTER_SITE_URL", "https://openrouter.ai/api/v1")
-    site_name = os.getenv("OPENROUTER_SITE_NAME", "XHS SEO Optimizer")
-
-    if not api_key:
-        logger.warning("OPENROUTER_API_KEY not found - using fallback formulas")
-        return _synthesize_formulas_fallback(patterns)
-
-    # Initialize OpenRouter client
-    client = OpenAI(
-        base_url="https://openrouter.ai/api/v1",
-        api_key=api_key
+    # 3. 构建LLM提示词
+    prompt = _build_metric_analysis_prompt(
+        metric=metric,
+        rationale=rationale,
+        feature_data=feature_data,
+        sample_size=len(filtered_notes),
+        variance_level=variance_level,
+        keyword=keyword
     )
 
-    # Batch processing: Process multiple patterns per API call
-    batch_size = AnalysisConfig.DEFAULT_BATCH_SIZE
-    total_batches = (len(patterns) + batch_size - 1) // batch_size  # Ceiling division
+    # 4. 调用LLM
+    try:
+        # 导入OpenAI client
+        from openai import OpenAI
 
-    logger.info(f"Using batch processing: {len(patterns)} patterns in {total_batches} batches (batch_size={batch_size})")
+        # 获取API配置
+        api_key = os.getenv("OPENROUTER_API_KEY", "")
+        model = os.getenv("OPENROUTER_TEXT_MODEL", "qwen/qwen3-235b-a22b-thinking-2507")
+        site_url = os.getenv("OPENROUTER_SITE_URL", "https://openrouter.ai/api/v1")
+        site_name = os.getenv("OPENROUTER_SITE_NAME", "XHS SEO Optimizer")
 
-    for batch_idx in range(0, len(patterns), batch_size):
-        batch = patterns[batch_idx:batch_idx + batch_size]
-        batch_num = batch_idx // batch_size + 1
+        if not api_key:
+            logger.warning("OPENROUTER_API_KEY not found - using fallback analysis")
+            parsed_data = _create_fallback_response(list(feature_data.keys()))
+        else:
+            # 初始化client
+            client = OpenAI(
+                base_url="https://openrouter.ai/api/v1",
+                api_key=api_key
+            )
 
-        logger.info(f"Processing batch {batch_num}/{total_batches} ({len(batch)} patterns)...")
-
-        try:
-            # Build batch LLM prompt
-            prompt = _build_batch_formula_prompt(batch)
-
-            # Call OpenRouter API once for the entire batch
+            # 调用LLM
             response = client.chat.completions.create(
                 extra_headers={
                     "HTTP-Referer": site_url,
@@ -605,414 +915,60 @@ def synthesize_formulas(
                 temperature=0.7,  # Higher temperature for creative formula generation
             )
 
-            # Extract and parse batch response
+            # 解析响应
             content = response.choices[0].message.content
-            formulas_list = _parse_batch_formula_response(content, len(batch))
 
-            # Update each pattern in the batch
-            for pattern, formula_data in zip(batch, formulas_list):
-                pattern.why_it_works = formula_data.get(
-                    "why_it_works",
-                    "该特征通过统计分析显示出显著影响"
-                )
-                pattern.creation_formula = formula_data.get(
-                    "creation_formula",
-                    f"遵循{pattern.feature_name}的最佳实践"
-                )
-                pattern.key_elements = formula_data.get(
-                    "key_elements",
-                    ["参考统计数据", "观察高分案例", "测试优化"]
-                )
-
-            logger.info(f"✓ Batch {batch_num}/{total_batches} completed ({len(batch)} patterns synthesized)")
-
-        except Exception as e:
-            logger.warning(f"Batch {batch_num} LLM synthesis failed: {e}")
-            # Use fallback for all patterns in this batch
-            for pattern in batch:
-                pattern.why_it_works = f"{pattern.feature_name}在优质笔记中广泛存在（统计验证）"
-                pattern.creation_formula = f"采用{pattern.feature_name}模式，参考最佳案例"
-                pattern.key_elements = [
-                    f"研究{pattern.feature_name}的成功案例",
-                    f"理解目标用户对{pattern.feature_name}的偏好",
-                    "测试并优化实际效果"
-                ]
-
-    logger.info(f"Formula synthesis complete: {len(patterns)} patterns processed in {total_batches} batches")
-    return patterns
-
-
-def _build_formula_prompt(pattern: FeaturePattern) -> str:
-    """Build LLM prompt for formula synthesis.
-
-    Args:
-        pattern: FeaturePattern with statistical evidence
-
-    Returns:
-        Chinese prompt for LLM
-    """
-    # Get affected metrics
-    metrics_str = ", ".join(pattern.affected_metrics.keys())
-
-    # Build examples list
-    examples_str = "\n".join([f"  - {ex}" for ex in pattern.examples[:AnalysisConfig.MAX_EXAMPLES_SINGLE_PROMPT]])
-
-    prompt = f"""你是小红书内容分析专家。请基于统计数据分析，为以下内容特征生成创作公式。
-
-**特征名称**：{pattern.feature_name}
-**特征类型**：{pattern.feature_type}
-**影响指标**：{metrics_str}
-**统计证据**：{pattern.statistical_evidence}
-**流行度**：在目标笔记中占比 {pattern.prevalence_pct:.1f}%
-
-**实际案例**：
-{examples_str}
-
-请分析：
-
-1. **why_it_works（心理学解释）**：
-   - 从用户心理、平台算法、内容传播角度解释为什么这个特征有效
-   - 用2-3句话说明其深层作用机制
-   - 结合小红书用户特点和平台生态
-
-2. **creation_formula（创作公式）**：
-   - 用一句话总结如何应用这个特征
-   - 必须具体、可执行、易理解
-   - 格式：动词开头的行动指令（如："在标题中..."、"使用..."、"通过..."）
-
-3. **key_elements（关键要素）**：
-   - 列出3-5个具体执行要点
-   - 每个要点要具体、可操作
-   - 优先级从高到低排序
-
-请以JSON格式返回结果：
-{{
-  "why_it_works": "心理学解释...",
-  "creation_formula": "创作公式...",
-  "key_elements": ["要素1", "要素2", "要素3"]
-}}
-
-注意事项：
-- 基于统计证据，不要过度推测
-- 保持专业和客观
-- 语言简洁实用，面向内容创作者"""
-
-    return prompt
-
-
-def _parse_formula_response(content: str) -> Dict[str, Any]:
-    """Parse LLM formula response.
-
-    Args:
-        content: Response content from LLM
-
-    Returns:
-        Dict with why_it_works, creation_formula, key_elements
-
-    Raises:
-        ValueError: If response cannot be parsed
-    """
-    import json
-
-    try:
-        # Try to extract JSON from response
-        # Handle both pure JSON and JSON in markdown code blocks
-        if "```json" in content:
-            json_start = content.find("```json") + 7
-            json_end = content.find("```", json_start)
-            json_str = content[json_start:json_end].strip()
-        elif "```" in content:
-            json_start = content.find("```") + 3
-            json_end = content.find("```", json_start)
-            json_str = content[json_start:json_end].strip()
-        else:
-            json_str = content.strip()
-
-        data = json.loads(json_str)
-
-        # Validate required fields
-        required_fields = ["why_it_works", "creation_formula", "key_elements"]
-        for field in required_fields:
-            if field not in data:
-                raise ValueError(f"Missing required field: {field}")
-
-        return data
+            parsed_data = _parse_metric_analysis_response(content, list(feature_data.keys()))
 
     except Exception as e:
-        raise ValueError(f"Failed to parse LLM response: {e}")
+        logger.error(f"LLM call failed for metric {metric}: {e}")
+        parsed_data = _create_fallback_response(list(feature_data.keys()))
 
 
-def _build_batch_formula_prompt(patterns: List[FeaturePattern]) -> str:
-    """Build LLM prompt for batch formula synthesis with detailed examples.
+    # 5. 创建MetricSuccessProfile
+    feature_analyses = {}
+    for feature_name, analysis_data in parsed_data['feature_analyses'].items():
+        if feature_name not in feature_data:
+            logger.warning(f"Feature {feature_name} in LLM response but not in feature_data, skipping")
+            continue
 
-    CRITICAL: This prompt must include REAL feature values from analysis results,
-    not just feature names. LLM needs to see actual examples to provide specific guidance.
+        # 验证并修正 key_elements（确保至少 3 个，最多 5 个）
+        key_elements = analysis_data.get('key_elements', ["参考案例", "测试优化", "持续迭代"])
+        if not isinstance(key_elements, list):
+            key_elements = ["参考案例", "测试优化", "持续迭代"]
+        elif len(key_elements) < 3:
+            # 自动填充到 3 个
+            default_elements = ["研究成功案例", "理解用户偏好", "测试并优化", "持续迭代", "数据驱动调整"]
+            while len(key_elements) < 3 and len(default_elements) > 0:
+                key_elements.append(default_elements.pop(0))
+            logger.warning(f"Feature {feature_name}: key_elements只有{len(analysis_data.get('key_elements', []))}个，自动填充到{len(key_elements)}个")
+        elif len(key_elements) > 5:
+            key_elements = key_elements[:5]
+            logger.warning(f"Feature {feature_name}: key_elements超过5个，截断到5个")
 
-    Args:
-        patterns: List of patterns with detailed examples from _get_feature_example()
-
-    Returns:
-        Chinese prompt for batch LLM processing with emphasis on actionability
-    """
-    # Build patterns list with detailed examples
-    patterns_str = ""
-    for i, pattern in enumerate(patterns, 1):
-        metrics_str = ", ".join(pattern.affected_metrics.keys())
-
-        # Use detailed examples (already formatted by _get_feature_example())
-        examples_list = pattern.examples[:AnalysisConfig.MAX_EXAMPLES_BATCH_PROMPT]
-        examples_str = "\n   ".join([f"• {ex}" for ex in examples_list])
-
-        patterns_str += f"""
-**模式{i}: {pattern.feature_name}**
-- 特征类型: {pattern.feature_type}
-- 影响指标: {metrics_str}
-- 统计证据: {pattern.statistical_evidence}
-- 流行度: {pattern.prevalence_pct:.1f}% (在优质笔记中)
-- 真实案例（来自高质量笔记分析）:
-   {examples_str}
-"""
-
-    prompt = f"""你是小红书内容策略专家。基于对{len(patterns)}个高质量笔记的实际分析数据，请为每个内容特征生成可执行的创作公式。
-
-**重要提示**：
-1. 上述案例来自真实的高质量笔记分析结果，不是理论推测
-2. 请仔细观察案例中的具体特征值，提取可复制的模式
-3. 创作公式必须具体到可以直接套用，避免泛泛而谈
-
-{patterns_str}
-
-请为每个模式分析并生成：
-
-1. **why_it_works（为什么有效）**：
-   - 基于上述真实案例，解释这个特征为什么在小红书平台有效
-   - 从用户心理学（为什么用户会点击/互动）、平台算法（平台如何推荐）、内容传播（如何引发分享）三个角度分析
-   - 2-3句话，直接、具体，避免空洞的理论
-
-2. **creation_formula（创作公式）**：
-   - 提供可直接套用的创作模板或公式
-   - 如果是标题：给出具体的标题结构（如"【数字】+【动词】+【痛点】+【emoji】"）
-   - 如果是内容：给出段落结构或叙事框架
-   - 如果是视觉：给出具体的设计要求（颜色、构图、文字位置等）
-   - 必须具体到创作者看了就知道怎么做
-
-3. **key_elements（关键要素）**：
-   - 列出3-5个具体、可验证的执行要点
-   - 每个要点要有明确的标准（如"标题字数15-20字"、"开头3句话内点明痛点"）
-   - 如果可能，参考真实案例中的具体数字、格式、位置
-   - 按优先级排序（最关键的放最前面）
-   - 避免模糊的表述（如"提高吸引力"），要具体说明如何提高
-
-**输出格式**：
-请以JSON数组格式返回，每个元素对应一个模式：
-[
-  {{
-    "why_it_works": "基于真实案例的心理学分析...",
-    "creation_formula": "可直接套用的创作模板或公式...",
-    "key_elements": ["具体要点1（包含数字/标准）", "具体要点2", "具体要点3", ...]
-  }},
-  ...
-]
-
-**质量标准**：
-- creation_formula 必须是创作者看了就能模仿的模板，不能是抽象建议
-- key_elements 的每一条都要有可执行性，最好包含具体的数字或格式要求
-- 所有建议都要基于上述真实案例的观察，不要臆测
-- 返回的数组长度必须等于{len(patterns)}
-
-开始分析："""
-
-    return prompt
-
-
-def _parse_batch_formula_response(content: str, expected_count: int) -> List[Dict[str, Any]]:
-    """Parse LLM batch formula response.
-
-    Args:
-        content: Response content from LLM
-        expected_count: Expected number of formulas
-
-    Returns:
-        List of dicts, each with why_it_works, creation_formula, key_elements
-
-    Raises:
-        ValueError: If response cannot be parsed or count mismatch
-    """
-    import json
-
-    try:
-        # Try to extract JSON from response
-        if "```json" in content:
-            json_start = content.find("```json") + 7
-            json_end = content.find("```", json_start)
-            json_str = content[json_start:json_end].strip()
-        elif "```" in content:
-            json_start = content.find("```") + 3
-            json_end = content.find("```", json_start)
-            json_str = content[json_start:json_end].strip()
-        else:
-            json_str = content.strip()
-
-        data = json.loads(json_str)
-
-        # Validate it's a list
-        if not isinstance(data, list):
-            raise ValueError(f"Expected list, got {type(data)}")
-
-        # Validate count
-        if len(data) != expected_count:
-            logger.warning(f"Expected {expected_count} formulas, got {len(data)}")
-            # Pad with defaults if too few
-            while len(data) < expected_count:
-                data.append({
-                    "why_it_works": "统计验证有效的内容模式",
-                    "creation_formula": "遵循最佳实践",
-                    "key_elements": ["参考统计数据", "观察高分案例", "测试优化"]
-                })
-            # Truncate if too many
-            data = data[:expected_count]
-
-        # Validate each item has required fields
-        for i, item in enumerate(data):
-            if not isinstance(item, dict):
-                raise ValueError(f"Item {i} is not a dict")
-
-            required_fields = ["why_it_works", "creation_formula", "key_elements"]
-            for field in required_fields:
-                if field not in item:
-                    # Fill with default
-                    if field == "key_elements":
-                        item[field] = ["参考统计数据", "观察高分案例", "测试优化"]
-                    else:
-                        item[field] = "待完善"
-
-        return data
-
-    except Exception as e:
-        logger.error(f"Failed to parse batch LLM response: {e}")
-        # Return default formulas
-        return [
-            {
-                "why_it_works": "统计验证有效的内容模式",
-                "creation_formula": "遵循最佳实践",
-                "key_elements": ["参考统计数据", "观察高分案例", "测试优化"]
-            }
-            for _ in range(expected_count)
-        ]
-
-
-def _synthesize_formulas_fallback(patterns: List[FeaturePattern]) -> List[FeaturePattern]:
-    """Fallback formula synthesis when LLM is unavailable.
-
-    Args:
-        patterns: List of patterns to fill with fallback formulas
-
-    Returns:
-        Updated patterns with fallback formulas
-    """
-    logger.info("Using fallback formula synthesis (no LLM)")
-
-    for pattern in patterns:
-        # Generate basic formulas based on statistical evidence
-        metrics = list(pattern.affected_metrics.keys())
-        primary_metric = metrics[0] if metrics else "互动"
-
-        pattern.why_it_works = (
-            f"{pattern.feature_name}在优质{primary_metric}笔记中广泛存在"
-            f"（流行度{pattern.prevalence_pct:.1f}%），"
-            f"表明该模式是成功内容的重要特征。"
+        feature_analyses[feature_name] = FeatureAnalysis(
+            feature_name=feature_name,
+            prevalence_count=feature_data[feature_name]['prevalence_count'],
+            prevalence_pct=feature_data[feature_name]['prevalence_pct'],
+            examples=feature_data[feature_name]['examples'],
+            why_it_works=analysis_data.get('why_it_works', f"{feature_name}在优质笔记中广泛存在"),
+            creation_formula=analysis_data.get('creation_formula', f"遵循{feature_name}最佳实践"),
+            key_elements=key_elements
         )
 
-        pattern.creation_formula = (
-            f"在{pattern.feature_type}中应用{pattern.feature_name}模式，"
-            f"参考高分案例的最佳实践"
-        )
-
-        pattern.key_elements = [
-            f"研究{pattern.feature_name}的成功案例（流行度>{pattern.prevalence_pct:.0f}%）",
-            f"理解该特征对{primary_metric}的影响机制",
-            "在创作中测试应用，观察数据反馈",
-            "持续优化和迭代内容策略"
-        ]
-
-    return patterns
-
-
-# === Task 3.6: Generate Summary Insights ===
-
-def generate_summary_insights(
-    patterns: List[FeaturePattern]
-) -> Tuple[List[str], str]:
-    """Generate key success factors and viral formula summary.
-
-    Args:
-        patterns: All discovered patterns
-
-    Returns:
-        Tuple of (key_success_factors, viral_formula_summary)
-    """
-    logger.info(f"Generating summary insights from {len(patterns)} patterns...")
-
-    # Select top 3-5 patterns by combined impact (z_score * prevalence_pct)
-    if len(patterns) == 0:
-        # Fallback for no patterns
-        key_success_factors = [
-            "样本量不足，无法识别显著模式",
-            "建议增加分析笔记数量",
-            "或降低统计显著性阈值"
-        ]
-        viral_formula_summary = (
-            "由于样本量不足或统计显著性要求较高，本次分析未能识别出明确的成功模式。"
-            "建议增加目标笔记数量或调整分析参数后重新分析。"
-        )
-        return key_success_factors, viral_formula_summary
-
-    # Sort patterns by impact score
-    # Use prevalence_pct * sample_size as impact score (higher prevalence + larger sample = higher impact)
-    scored_patterns = []
-    for pattern in patterns:
-        impact_score = pattern.prevalence_pct * pattern.sample_size
-        scored_patterns.append((pattern, impact_score))
-
-    scored_patterns.sort(key=lambda x: x[1], reverse=True)
-
-    # Select top patterns
-    top_patterns = [p for p, _ in scored_patterns[:AnalysisConfig.TOP_PATTERNS_COUNT]]
-
-    # NOTE: Full implementation would:
-    # 1. Build LLM prompt with top patterns and their evidence
-    # 2. Ask LLM to synthesize:
-    #    - key_success_factors: 3-5 concise insights
-    #    - viral_formula_summary: Holistic creation template (>100 chars)
-    # 3. Parse and validate response
-
-    # Placeholder implementation
-    key_success_factors = []
-    for i, pattern in enumerate(top_patterns[:AnalysisConfig.MAX_SUCCESS_FACTORS]):
-        factor = f"{pattern.feature_name}: {pattern.description}"
-        key_success_factors.append(factor)
-
-    # Ensure we have minimum required factors
-    while len(key_success_factors) < AnalysisConfig.MIN_SUCCESS_FACTORS:
-        key_success_factors.append(f"待分析的成功因素 {len(key_success_factors) + 1}")
-
-    viral_formula_summary = (
-        f"基于 {len(patterns)} 个统计显著的内容模式分析，"
-        f"发现高表现笔记主要具备以下特征：{', '.join([p.feature_name for p in top_patterns[:AnalysisConfig.TOP_FEATURES_IN_SUMMARY]])}。"
-        f"这些模式在高分组中的流行度显著高于基线组，具有可复制性。"
+    profile = MetricSuccessProfile(
+        metric_name=metric,
+        sample_size=len(filtered_notes),
+        variance_level=variance_level,
+        relevant_features=relevant_features,
+        feature_analyses=feature_analyses,
+        metric_success_narrative=parsed_data.get(
+            'metric_success_narrative',
+            f"{metric}受多个内容特征协同影响"
+        ),
+        timestamp=get_current_timestamp()
     )
 
-    logger.info("Summary insights generated")
 
-    return key_success_factors, viral_formula_summary
-
-
-# === Utility Functions ===
-
-def get_current_timestamp() -> str:
-    """Get current timestamp in ISO 8601 format.
-
-    Returns:
-        ISO 8601 timestamp string
-    """
-    return datetime.utcnow().isoformat() + 'Z'
+    logger.info(f"✓ Metric analysis complete for {metric}")
+    return profile

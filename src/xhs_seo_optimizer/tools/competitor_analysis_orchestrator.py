@@ -12,15 +12,17 @@ from pydantic import BaseModel, Field
 from crewai.tools import BaseTool
 
 from xhs_seo_optimizer.models.note import Note
-from xhs_seo_optimizer.models.reports import SuccessProfileReport, FeaturePattern
+from xhs_seo_optimizer.models.reports import SuccessProfileReport
 from xhs_seo_optimizer.analysis_helpers import (
     aggregate_statistics,
     extract_features_matrix,
-    identify_patterns,
-    synthesize_formulas,
+    filter_notes_by_metric_variance,
+    analyze_metric_success,
     generate_summary_insights,
     get_current_timestamp,
+    AnalysisConfig,
 )
+from xhs_seo_optimizer.attribution import get_all_metrics
 
 logger = logging.getLogger(__name__)
 
@@ -39,13 +41,21 @@ class CompetitorAnalysisInput(BaseModel):
 class CompetitorAnalysisOrchestrator(BaseTool):
     """Orchestrates the full competitor analysis workflow.
 
-    This tool performs the complete analysis pipeline:
+    This tool performs the complete analysis pipeline using METRIC-CENTRIC approach:
     1. Aggregate statistics
     2. Extract features from all notes
-    3. Identify statistically significant patterns
-    4. Synthesize LLM-generated formulas
-    5. Generate summary insights
-    6. Assemble SuccessProfileReport
+    3. For each metric:
+         - Filter notes by variance
+         - Analyze all relevant features in ONE LLM call
+         - Generate MetricSuccessProfile
+    4. Generate cross-metric summary insights (key success factors + viral formula)
+    5. Assemble SuccessProfileReport (metric-centric structure)
+
+    **Key Improvement**: Reduces LLM calls from ~19 to ~10 by analyzing
+    all features for a metric together instead of separately.
+
+    **Data Structure**: Returns metric-centric profiles for gap analysis workflow,
+    where downstream agents compare owned notes' metrics against competitor baselines.
     """
 
     name: str = "CompetitorAnalysisOrchestrator"
@@ -82,48 +92,49 @@ class CompetitorAnalysisOrchestrator(BaseTool):
             logger.info("Step 2: Extracting features...")
             features_matrix = extract_features_matrix(target_notes)
 
-            # Step 3: Identify patterns (Layer 1 & 2)
-            logger.info("Step 3: Identifying patterns...")
-            patterns = identify_patterns(
-                target_notes,
-                features_matrix,
-                aggregated_stats
-            )
+            # Step 3: Metric-centric analysis (NEW APPROACH)
+            logger.info("Step 3: Analyzing patterns (metric-centric approach)...")
+            metric_profiles = []
 
-            # Step 4: Synthesize formulas (Layer 3)
-            logger.info("Step 4: Synthesizing formulas...")
-            patterns = synthesize_formulas(patterns, target_notes)
+            for metric in get_all_metrics():
+                # 3.1: Filter notes by metric variance
+                filtered_notes, variance_level = filter_notes_by_metric_variance(
+                    target_notes, metric
+                )
 
-            # Step 5: Generate summary insights
-            logger.info("Step 5: Generating summary insights...")
-            key_factors, formula_summary = generate_summary_insights(patterns)
+                # 3.2: Analyze all features for this metric in ONE LLM call
+                if len(filtered_notes) >= AnalysisConfig.MIN_SAMPLE_SIZE:
+                    profile = analyze_metric_success(
+                        metric=metric,
+                        filtered_notes=filtered_notes,
+                        features_matrix=features_matrix,
+                        variance_level=variance_level,
+                        keyword=keyword
+                    )
+                    metric_profiles.append(profile)
+                else:
+                    logger.warning(f"Skipping {metric}: insufficient notes after filtering")
 
-            # Step 6: Organize patterns by feature type
-            logger.info("Step 6: Organizing patterns...")
-            title_patterns = [p for p in patterns if p.feature_type == "title"]
-            cover_patterns = [p for p in patterns if p.feature_type == "cover"]
-            content_patterns = [p for p in patterns if p.feature_type == "content"]
-            tag_patterns = [p for p in patterns if p.feature_type == "tag"]
+            logger.info(f"✓ Created {len(metric_profiles)} metric success profiles")
 
-            # Step 7: Create SuccessProfileReport
-            logger.info("Step 7: Creating report...")
+            # Step 4: Generate cross-metric summary insights
+            logger.info("Step 4: Generating cross-metric summary insights...")
+            key_factors, formula_summary = generate_summary_insights(metric_profiles)
+
+            # Step 5: Create SuccessProfileReport (metric-centric structure)
+            logger.info("Step 5: Creating SuccessProfileReport...")
             report = SuccessProfileReport(
                 keyword=keyword,
                 sample_size=len(target_notes),
                 aggregated_stats=aggregated_stats,
-                title_patterns=title_patterns,
-                cover_patterns=cover_patterns,
-                content_patterns=content_patterns,
-                tag_patterns=tag_patterns,
+                metric_profiles=metric_profiles,
                 key_success_factors=key_factors,
                 viral_formula_summary=formula_summary,
                 analysis_timestamp=get_current_timestamp()
             )
 
-            logger.info("Competitor analysis complete!")
-            logger.info(f"Found {len(patterns)} total patterns: "
-                       f"{len(title_patterns)} title, {len(cover_patterns)} cover, "
-                       f"{len(content_patterns)} content, {len(tag_patterns)} tag")
+            logger.info("✓ Competitor analysis complete!")
+            logger.info(f"Analyzed {len(metric_profiles)} metrics with metric-centric approach")
 
             # Save report to local file
             output_dir = Path.cwd() / "output"

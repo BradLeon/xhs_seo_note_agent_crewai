@@ -26,7 +26,7 @@ except ImportError:
     print("⚠ python-dotenv not installed, using shell environment variables\n")
 
 from xhs_seo_optimizer.models.note import Note
-from xhs_seo_optimizer.models.reports import SuccessProfileReport, FeaturePattern
+from xhs_seo_optimizer.models.reports import SuccessProfileReport
 from xhs_seo_optimizer.tools import CompetitorAnalysisOrchestrator
 import logging
 logging.basicConfig(level=logging.INFO)
@@ -77,19 +77,11 @@ def print_report_summary(report_json: str):
     print(f"  - 分析指标数: {len(stats.prediction_stats)}")
     print(f"  - 标签维度数: {len(stats.tag_frequencies)}")
 
-    # Patterns summary
-    total_patterns = (
-        len(report.title_patterns) +
-        len(report.cover_patterns) +
-        len(report.content_patterns) +
-        len(report.tag_patterns)
-    )
-
-    print(f"\n发现的成功模式: {total_patterns} 个")
-    print(f"  - 标题模式: {len(report.title_patterns)}")
-    print(f"  - 封面模式: {len(report.cover_patterns)}")
-    print(f"  - 内容模式: {len(report.content_patterns)}")
-    print(f"  - 标签模式: {len(report.tag_patterns)}")
+    # Metric profiles summary
+    print(f"\n指标分析结果: {len(report.metric_profiles)} 个指标")
+    for profile in report.metric_profiles:
+        print(f"  - {profile.metric_name}: {len(profile.feature_analyses)} 个特征 "
+              f"(样本:{profile.sample_size}, {profile.variance_level} variance)")
 
     # Key success factors
     print(f"\n关键成功因素:")
@@ -100,31 +92,25 @@ def print_report_summary(report_json: str):
     print(f"\n爆款公式总结:")
     print(f"  {report.viral_formula_summary}")
 
-    # Pattern details
+    # Metric-centric detailed analysis
     print("\n" + "=" * 80)
-    print("详细模式分析")
+    print("详细指标分析（Metric-Centric）")
     print("=" * 80)
 
-    for pattern_type, patterns in [
-        ("标题模式", report.title_patterns),
-        ("封面模式", report.cover_patterns),
-        ("内容模式", report.content_patterns),
-        ("标签模式", report.tag_patterns)
-    ]:
-        if patterns:
-            print(f"\n【{pattern_type}】")
-            for i, pattern in enumerate(patterns, 1):
-                print(f"\n{i}. {pattern.feature_name}")
-                print(f"   流行度: {pattern.prevalence_pct:.1f}% (在{pattern.sample_size}个目标笔记中)")
-                print(f"   统计证据: {pattern.statistical_evidence}")
-                print(f"   影响指标: {', '.join(pattern.affected_metrics.keys())}")
-                print(f"   为什么有效: {pattern.why_it_works}")
-                print(f"   创作公式: {pattern.creation_formula}")
-                print(f"   关键要素:")
-                for j, element in enumerate(pattern.key_elements, 1):
-                    print(f"      {j}) {element}")
-                if pattern.examples:
-                    print(f"   示例: {pattern.examples[0]}")
+    for profile in report.metric_profiles:
+        print(f"\n【{profile.metric_name.upper()}】")
+        print(f"样本量: {profile.sample_size} ({profile.variance_level} variance)")
+        print(f"整体叙述: {profile.metric_success_narrative}")
+        print(f"\n相关特征分析:")
+
+        for feature_name, analysis in profile.feature_analyses.items():
+            print(f"\n  • {feature_name}")
+            print(f"    流行度: {analysis.prevalence_pct:.1f}% ({analysis.prevalence_count}/{profile.sample_size})")
+            print(f"    为什么有效: {analysis.why_it_works}")
+            print(f"    创作公式: {analysis.creation_formula}")
+            print(f"    关键要素: {', '.join(analysis.key_elements)}")
+            if analysis.examples:
+                print(f"    示例: {analysis.examples[0]}")
 
 
 def main():
