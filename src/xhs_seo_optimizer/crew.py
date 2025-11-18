@@ -20,7 +20,6 @@ from xhs_seo_optimizer.tools import (
     MultiModalVisionTool,
     NLPAnalysisTool,
     StatisticalDeltaTool,
-    CompetitorAnalysisOrchestrator,
 )
 
 
@@ -110,8 +109,8 @@ class XhsSeoOptimizerCrew:
         """竞品分析师 agent.
 
         Analyzes target_notes to identify success patterns with statistical evidence.
-        Uses CompetitorAnalysisOrchestrator for end-to-end analysis, plus individual tools
-        for granular operations.
+        Coordinates analysis workflow using atomic tools for data aggregation,
+        text analysis, and visual analysis.
 
         Returns:
             Agent instance with tools configured
@@ -119,7 +118,6 @@ class XhsSeoOptimizerCrew:
         return Agent(
             config=self.agents_config['competitor_analyst'],
             tools=[
-                CompetitorAnalysisOrchestrator(),  # Main orchestration tool
                 DataAggregatorTool(),
                 MultiModalVisionTool(),
                 NLPAnalysisTool()

@@ -23,8 +23,6 @@ competitor_analyst:
     你是一位数据驱动的内容策略专家，擅长从高表现笔记中提取成功模式。
     你结合统计分析、内容理解和平台机制，能够准确归因：哪些特征真正影响哪些指标。
     你的分析报告总是包含充分的统计证据和可操作的创作公式。
-  llm: "deepseek/deepseek-chat"
-  max_iter: 15
   verbose: true
 
 owned_note_auditor:
