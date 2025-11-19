@@ -202,16 +202,6 @@ class MultiModalVisionTool(BaseTool):
         # Construct analysis prompt
         prompt = self._build_vision_prompt(note_meta_data)
 
-        # ========== REQUEST LOGGING ==========
-        logger.info("=" * 80)
-        logger.info("LLM REQUEST - MultiModal Vision Analysis")
-        logger.info("=" * 80)
-        logger.info(f"Model: {self.model}")
-        logger.info(f"Note ID: {note_meta_data.note_id if hasattr(note_meta_data, 'note_id') else 'unknown'}")
-        logger.info(f"Image URLs: {image_urls}")
-        logger.info(f"Prompt (first 500 chars):\n{prompt[:500]}...")
-        logger.info("=" * 80)
-
         try:
             # Build multi-image message content
             message_content = [
@@ -243,14 +233,6 @@ class MultiModalVisionTool(BaseTool):
 
             # Extract and parse response
             content = response.choices[0].message.content
-
-            # ========== RESPONSE LOGGING ==========
-            logger.info("=" * 80)
-            logger.info("LLM RESPONSE - MultiModal Vision Analysis")
-            logger.info("=" * 80)
-            logger.info(f"Response length: {len(content)} characters")
-            logger.info(f"Full response content:\n{content}")
-            logger.info("=" * 80)
 
             return self._parse_vision_response(content)
 
@@ -350,33 +332,18 @@ class MultiModalVisionTool(BaseTool):
         try:
             # Try to extract JSON from response
             # Handle both pure JSON and JSON in markdown code blocks
-            logger.info("=" * 80)
-            logger.info("JSON EXTRACTION")
-            logger.info("=" * 80)
-
             if "```json" in content:
                 json_start = content.find("```json") + 7
                 json_end = content.find("```", json_start)
                 json_str = content[json_start:json_end].strip()
-                logger.info("Extraction method: ```json block")
-                logger.info(f"Start position: {json_start}, End position: {json_end}")
             elif "```" in content:
                 json_start = content.find("```") + 3
                 json_end = content.find("```", json_start)
                 json_str = content[json_start:json_end].strip()
-                logger.info("Extraction method: ``` block")
-                logger.info(f"Start position: {json_start}, End position: {json_end}")
             else:
                 json_str = content.strip()
-                logger.info("Extraction method: Using full content as JSON")
-
-            logger.info(f"Extracted JSON length: {len(json_str)} characters")
-            logger.info(f"Extracted JSON content:\n{json_str}")
-            logger.info("=" * 80)
 
             data = json.loads(json_str)
-            logger.info("✓ JSON parsing successful!")
-            logger.info("=" * 80)
 
             # Define all required fields with defaults
             required_fields = {
