@@ -9,10 +9,38 @@ import json
 from typing import Any, Dict, Optional
 from openai import OpenAI
 from crewai.tools import BaseTool
-from pydantic import Field
+from pydantic import Field, ConfigDict, BaseModel
 
 from ..models.analysis_results import TextAnalysisResult
 from ..models.note import NoteMetaData
+
+
+class NLPAnalysisInput(BaseModel):
+    """Input schema for NLPAnalysisTool.
+
+    Supports two calling modes:
+    1. Smart mode (recommended): Pass note_id, tool auto-fetches metadata from shared_context
+    2. Legacy mode: Pass note_metadata directly (backward compatible)
+
+    Agent usage examples:
+        智能模式: nlp_text_analysis(note_id="5e96b4f700000000010040e6")
+        传统模式: nlp_text_analysis(note_metadata={...}, note_id="xxx")
+    """
+    note_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "笔记ID - 工具会自动从系统中获取该笔记的 metadata 并分析。"
+            "推荐使用此模式，只需传入 note_id。"
+        )
+    )
+    note_metadata: Optional[dict] = Field(
+        default=None,
+        description=(
+            "可选：直接传入序列化的 NoteMetaData dict。"
+            "如果不传，工具会根据 note_id 自动从系统获取。"
+            "Required keys: note_id, title, content, cover_image_url."
+        )
+    )
 
 
 class NLPAnalysisTool(BaseTool):
@@ -20,15 +48,22 @@ class NLPAnalysisTool(BaseTool):
 
     Deep structural analysis of XHS note content using LLM.
     Analyzes title patterns, opening hooks, content framework, ending techniques, etc.
+
+    Following official CrewAI pattern: receives serialized dict data,
+    reconstructs NoteMetaData internally for processing.
     """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
     name: str = "nlp_text_analysis"
     description: str = (
         "Analyzes Xiaohongshu note text structure deeply. "
-        "Input: NoteMetaData object. "
-        "Output: TextAnalysisResult with structural analysis. "
+        "Smart mode: Just pass note_id, tool auto-fetches metadata - nlp_text_analysis(note_id='xxx'). "
+        "Legacy mode: Pass note_metadata directly. "
+        "Output: TextAnalysisResult JSON with 30+ text features. "
         "使用场景：深度分析笔记内容结构，包括标题、开头、正文、结尾的套路和技巧。"
     )
+    args_schema: type[BaseModel] = NLPAnalysisInput
 
     # OpenRouter configuration for LLM analysis
     api_key: str = Field(default_factory=lambda: os.getenv("OPENROUTER_API_KEY", ""))
@@ -48,39 +83,72 @@ class NLPAnalysisTool(BaseTool):
 
     def _run(
         self,
-        note_meta_data: NoteMetaData,
-        note_id: Optional[str] = None
+        note_id: Optional[str] = None,
+        note_metadata: Optional[dict] = None
     ) -> str:
         """Analyze note content structure and return analysis result.
 
+        Supports two modes:
+        1. Smart mode: Pass note_id, auto-fetch metadata from shared_context
+        2. Legacy mode: Pass note_metadata directly
+
         Args:
-            note_meta_data: NoteMetaData object containing title and content
-            note_id: Optional note ID for tracking
+            note_id: Note ID to analyze (tool will fetch metadata automatically)
+            note_metadata: Optional - directly provide serialized NoteMetaData dict
 
         Returns:
             JSON string of TextAnalysisResult
 
         Raises:
-            ValueError: If API key is missing or note_meta_data is invalid
+            ValueError: If API key is missing or both note_id and note_metadata are missing
             RuntimeError: If LLM analysis fails
         """
-        # Validate inputs
+        # Validate API key
         if not self.api_key:
             raise ValueError(
                 "OPENROUTER_API_KEY not found. "
                 "Please set it in .env file or environment variables."
             )
 
-        if not note_meta_data or not note_meta_data.content:
-            raise ValueError("note_meta_data and content cannot be empty")
+        # Smart mode: Fetch from shared_context if only note_id provided
+        if not note_metadata and note_id:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.info(f"Smart mode: Fetching metadata for note_id={note_id} from shared_context")
+
+            from xhs_seo_optimizer.shared_context import shared_context
+            notes = shared_context.get("target_notes_data", [])
+
+            # Find the note by note_id
+            for note in notes:
+                if note.get('note_id') == note_id:
+                    note_metadata = note.get('meta_data')
+                    logger.info(f"✓ Found note metadata for {note_id}")
+                    break
+
+            if not note_metadata:
+                raise ValueError(
+                    f"Note with ID '{note_id}' not found in shared_context. "
+                    f"Available notes: {[n.get('note_id') for n in notes]}"
+                )
+
+        # Validate we have metadata now
+        if not note_metadata or not note_metadata.get('content'):
+            raise ValueError(
+                "Either note_id (for smart mode) or note_metadata (for legacy mode) must be provided. "
+                "note_metadata must contain 'content' field."
+            )
 
         try:
+            # Reconstruct NoteMetaData from serialized dict
+            actual_meta_data = NoteMetaData(**note_metadata)
+
             # Analyze with LLM
-            analysis_dict = self._analyze_with_llm(note_meta_data)
+            analysis_dict = self._analyze_with_llm(actual_meta_data)
 
             # Create TextAnalysisResult
             result = TextAnalysisResult(
-                note_id=note_id or "unknown",
+                note_id=note_id or note_metadata.get('note_id', 'unknown'),
                 **analysis_dict
             )
 

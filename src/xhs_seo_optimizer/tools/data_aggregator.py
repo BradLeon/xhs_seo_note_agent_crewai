@@ -6,12 +6,12 @@ Computes mean, median, std, min, max for prediction metrics and tag frequencies.
 
 import json
 import logging
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from collections import Counter
 
 import numpy as np
 from crewai.tools import BaseTool
-from pydantic import Field
+from pydantic import Field, ConfigDict, BaseModel
 
 from ..models.note import Note
 from ..models.analysis_results import MetricStats, AggregatedMetrics
@@ -19,20 +19,42 @@ from ..models.analysis_results import MetricStats, AggregatedMetrics
 logger = logging.getLogger(__name__)
 
 
+class DataAggregatorInput(BaseModel):
+    """Input schema for DataAggregatorTool.
+
+    Following CrewAI best practice: tool fetches data from shared context
+    automatically, so no parameters are required. Agent can call this tool
+    without any arguments.
+    """
+    target_notes_data: Optional[List[dict]] = Field(
+        default=None,
+        description=(
+            "Optional list of notes (usually omit this - tool fetches from shared context automatically). "
+            "Agent should call this tool without parameters: data_aggregator()"
+        )
+    )
+
+
 class DataAggregatorTool(BaseTool):
     """数据聚合工具 (Data Aggregator Tool).
 
     Calculates statistical summaries across multiple notes.
     Used by CompetitorAnalyst to quantify "winning patterns" in target_notes.
+
+    Following official CrewAI pattern: receives serialized dict data,
+    reconstructs Note objects internally for processing.
     """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
     name: str = "Data Aggregator"
     description: str = (
-        "Aggregates statistical metrics across multiple Xiaohongshu notes. "
-        "Input: List of Note objects. "
-        "Output: AggregatedMetrics with mean, median, std, min, max for predictions and tag frequencies. "
-        "使用场景：计算多个笔记的统计摘要，识别高表现笔记的共同模式。"
+        "Aggregates statistical metrics across all target notes (fetches data from shared context automatically). "
+        "Usage: Call without parameters - data_aggregator() "
+        "Output: AggregatedMetrics JSON with mean, median, std, min, max for predictions and tag frequencies. "
+        "使用场景：自动获取target_notes_data并计算统计摘要，识别高表现笔记的共同模式。"
     )
+    args_schema: type[BaseModel] = DataAggregatorInput
 
     remove_outliers: bool = Field(
         default=False,
@@ -43,23 +65,46 @@ class DataAggregatorTool(BaseTool):
         description="异常值阈值 (Z-score threshold for outlier removal, default ±2σ)"
     )
 
-    def _run(self, notes: List[Note]) -> str:
+    def _run(self, target_notes_data: List[dict] = None) -> str:
         """Aggregate statistics across multiple notes.
 
+        Following CrewAI best practice: fetches data from shared context
+        to work around LLM agents hallucinating fake data when trying to
+        pass large lists as parameters.
+
         Args:
-            notes: List of Note objects to analyze (typically 3-10 target_notes)
+            target_notes_data: Optional list of serialized note dicts.
+                              If not provided or invalid, fetches from shared context.
 
         Returns:
             JSON string of AggregatedMetrics model
 
         Raises:
             ValueError: If notes list is empty or invalid
+            RuntimeError: If aggregation fails
         """
+        # Fetch from shared context if parameter is missing/invalid
+        # This works around CrewAI's limitation where agents hallucinate data
+        if not target_notes_data or len(target_notes_data) == 0:
+            logger.info("Parameter target_notes_data is empty, fetching from shared context")
+            from xhs_seo_optimizer.shared_context import shared_context
+            target_notes_data = shared_context.get("target_notes_data")
+
         # Validate input
-        if not notes or len(notes) == 0:
-            raise ValueError("notes list must contain at least one note")
+        if not target_notes_data or len(target_notes_data) == 0:
+            raise ValueError(
+                "target_notes_data must contain at least one note. "
+                "Data not found in parameters or shared context."
+            )
+
+        logger.info(f"Aggregating statistics for {len(target_notes_data)} notes")
 
         try:
+            # Reconstruct Note objects from serialized dicts
+            # Using Pydantic's native deserialization (works with model_dump() output)
+            notes = [Note(**note_dict) for note_dict in target_notes_data]
+            logger.info(f"Successfully reconstructed {len(notes)} Note objects")
+
             # Aggregate prediction metrics
             prediction_stats = self._aggregate_prediction_metrics(notes)
 

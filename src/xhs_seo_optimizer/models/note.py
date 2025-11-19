@@ -121,3 +121,23 @@ class Note(BaseModel):
             prediction=NotePrediction(**data["prediction"]),
             tag=NoteTag(**data["tag"]),
         )
+
+
+class ComplexInput(BaseModel):
+    """ComplexInput wrapper for crew kickoff inputs (Crew输入包装器).
+
+    Wraps complex nested Pydantic objects (List[Note]) with simple types
+    for CrewAI's kickoff() method. Use model_dump() to serialize before
+    passing to crew.kickoff().
+
+    Example:
+        >>> complex_input = ComplexInput(
+        ...     target_notes=[note1, note2],
+        ...     keyword="AI技术"
+        ... )
+        >>> crew.kickoff(inputs=complex_input.model_dump())
+    """
+
+    target_notes: List[Note] = Field(description="竞品笔记列表 (Competitor notes)")
+    keyword: str = Field(description="目标关键词 (Target keyword)")
+    owned_note: Optional[Note] = Field(default=None, description="自有笔记 (Owned note, optional)")

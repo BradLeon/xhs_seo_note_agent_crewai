@@ -22,15 +22,58 @@ orchestrate_workflow:
 
 analyze_competitors:
   description: |
-    分析target_notes在关键词'{keyword}'下的成功模式:
-    1. 使用DataAggregatorTool计算统计摘要
-    2. 使用NLPAnalysisTool和MultiModalVisionTool提取每个笔记的特征
-    3. 应用混合归因逻辑识别高相关性模式
-    4. 生成SuccessProfileReport，包含:
-       - 按特征类型组织的模式列表 (title, cover, content, tag)
-       - 每个模式的统计证据 (prevalence %, z-score, p-value)
-       - LLM生成的创作公式和执行要点
-  expected_output: "SuccessProfileReport (JSON格式)"
+    分析target_notes在关键词'{keyword}'下的成功模式。按以下步骤执行:
+
+    **步骤1: 统计聚合**
+    - 调用 DataAggregatorTool，传入所有 target_notes
+    - 获取每个指标的统计数据（mean, median, std, outliers）
+    - 保存结果为 aggregated_stats，用于后续分析
+
+    **步骤2: 特征提取（构建features_matrix）**
+    - 对每个 target_note 逐个处理:
+      * 调用 NLPAnalysisTool(note.meta_data) 获取文本特征
+        - 提取30+个文本特征（title_pattern, opening_strategy, pain_points等）
+      * 调用 MultiModalVisionTool(note.meta_data) 获取视觉特征
+        - 提取17+个视觉特征（thumbnail_appeal, color_scheme, visual_tone等）
+      * 将该笔记的所有特征存储在 features_matrix[note.note_id] 中
+    - 最终得到完整的 features_matrix 字典
+
+    **步骤3: 指标分析（metric-centric）**
+    - 对每个预测指标 (ctr, comment_rate, collect_rate, like_rate, sort_score2等):
+      a. 方差过滤：计算该指标的变异系数(CV)
+         - 如果 CV < 0.3（低方差）：使用所有笔记
+         - 如果 CV >= 0.3（高方差）：使用该指标top 50%的笔记
+      b. 特征统计：对过滤后的笔记，统计相关特征的prevalence
+         - 计算每个特征在高分笔记中的出现比例
+         - 识别prevalence > 70%的显著特征
+      c. 生成 MetricSuccessProfile:
+         - metric_name: 指标名称
+         - sample_size: 分析的笔记数量
+         - variance_level: low/high
+         - feature_analyses: 每个特征的详细分析
+         - metric_success_narrative: 整体叙述
+
+    **步骤4: 跨指标总结**
+    - 从所有 MetricSuccessProfile 中提取共性模式
+    - 识别 3-5 个关键成功因素（key_success_factors）
+    - 生成简洁的爆款公式总结（viral_formula_summary）
+
+    **步骤5: 生成报告**
+    - 创建 SuccessProfileReport，包含:
+      * keyword: 目标关键词
+      * sample_size: 样本数量
+      * aggregated_stats: 聚合统计（来自步骤1）
+      * metric_profiles: 指标分析列表（来自步骤3）
+      * key_success_factors: 关键成功因素（来自步骤4）
+      * viral_formula_summary: 爆款公式（来自步骤4）
+      * analysis_timestamp: 分析时间戳
+
+    **重要提示:**
+    - 每个工具调用都应该检查返回结果，处理可能的错误
+    - features_matrix 是核心数据结构，必须完整构建
+    - 使用 metric-centric 方式组织分析结果（按指标而非特征）
+
+  expected_output: "SuccessProfileReport (JSON格式，包含完整的竞品分析结果)"
   agent: competitor_analyst
   output_file: "outputs/success_profile_report.json"
   # Note: output_pydantic在crew.py的@task方法中配置，不在YAML中
