@@ -10,12 +10,40 @@ import logging
 from typing import Any, Dict, List, Optional
 from openai import OpenAI
 from crewai.tools import BaseTool
-from pydantic import Field
+from pydantic import Field, ConfigDict, BaseModel
 
 from ..models.analysis_results import VisionAnalysisResult
 from ..models.note import NoteMetaData
 
 logger = logging.getLogger(__name__)
+
+
+class MultiModalVisionInput(BaseModel):
+    """Input schema for MultiModalVisionTool.
+
+    Supports two calling modes:
+    1. Smart mode (recommended): Pass note_id, tool auto-fetches metadata from shared_context
+    2. Legacy mode: Pass note_metadata directly (backward compatible)
+
+    Agent usage examples:
+        智能模式: multimodal_vision_analysis(note_id="5e96b4f700000000010040e6")
+        传统模式: multimodal_vision_analysis(note_metadata={...}, note_id="xxx")
+    """
+    note_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "笔记ID - 工具会自动从系统中获取该笔记的 metadata（包括封面图和内页图）并分析。"
+            "推荐使用此模式，只需传入 note_id。"
+        )
+    )
+    note_metadata: Optional[dict] = Field(
+        default=None,
+        description=(
+            "可选：直接传入序列化的 NoteMetaData dict。"
+            "如果不传，工具会根据 note_id 自动从系统获取。"
+            "Required keys: cover_image_url. Optional: inner_image_urls."
+        )
+    )
 
 
 class MultiModalVisionTool(BaseTool):
@@ -26,15 +54,22 @@ class MultiModalVisionTool(BaseTool):
     Returns structured visual features as VisionAnalysisResult.
 
     Cost: ~$0.002 per image, ~$0.01 per note (5 images).
+
+    Following official CrewAI pattern: receives serialized dict data,
+    reconstructs NoteMetaData internally for processing.
     """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
     name: str = "multimodal_vision_analysis"
     description: str = (
         "Analyzes Xiaohongshu note images (cover + inner images) to extract visual features. "
-        "Input: NoteMetaData object. "
-        "Output: VisionAnalysisResult with comprehensive visual analysis. "
+        "Smart mode: Just pass note_id, tool auto-fetches images - multimodal_vision_analysis(note_id='xxx'). "
+        "Legacy mode: Pass note_metadata directly. "
+        "Output: VisionAnalysisResult JSON with 17+ visual features. "
         "使用场景：分析笔记封面图和内页图的视觉设计元素，包括风格、色彩、排版、OCR等。"
     )
+    args_schema: type[BaseModel] = MultiModalVisionInput
 
     # OpenRouter configuration
     api_key: str = Field(default_factory=lambda: os.getenv("OPENROUTER_API_KEY", ""))
@@ -56,50 +91,81 @@ class MultiModalVisionTool(BaseTool):
 
     def _run(
         self,
-        note_meta_data: NoteMetaData,
-        note_id: Optional[str] = None
+        note_id: Optional[str] = None,
+        note_metadata: Optional[dict] = None
     ) -> str:
         """Analyze note images (cover + inner images) and return vision analysis result.
 
+        Supports two modes:
+        1. Smart mode: Pass note_id, auto-fetch metadata from shared_context
+        2. Legacy mode: Pass note_metadata directly
+
         Args:
-            note_meta_data: NoteMetaData object containing cover_image_url and inner_image_urls
-            note_id: Optional note ID for tracking
+            note_id: Note ID to analyze (tool will fetch metadata automatically)
+            note_metadata: Optional - directly provide serialized NoteMetaData dict
 
         Returns:
             JSON string of VisionAnalysisResult
 
         Raises:
-            ValueError: If API key is missing or note_meta_data is invalid
+            ValueError: If API key is missing or both note_id and note_metadata are missing
             RuntimeError: If API call fails
         """
-        # Validate inputs
+        # Validate API key
         if not self.api_key:
             raise ValueError(
                 "OPENROUTER_API_KEY not found. "
                 "Please set it in .env file or environment variables."
             )
 
-        if not note_meta_data or not note_meta_data.cover_image_url:
-            raise ValueError("note_meta_data and cover_image_url cannot be empty")
+        # Smart mode: Fetch from shared_context if only note_id provided
+        if not note_metadata and note_id:
+            logger.info(f"Smart mode: Fetching metadata for note_id={note_id} from shared_context")
+
+            from xhs_seo_optimizer.shared_context import shared_context
+            notes = shared_context.get("target_notes_data", [])
+
+            # Find the note by note_id
+            for note in notes:
+                if note.get('note_id') == note_id:
+                    note_metadata = note.get('meta_data')
+                    logger.info(f"✓ Found note metadata for {note_id}")
+                    break
+
+            if not note_metadata:
+                raise ValueError(
+                    f"Note with ID '{note_id}' not found in shared_context. "
+                    f"Available notes: {[n.get('note_id') for n in notes]}"
+                )
+
+        # Validate we have metadata now
+        if not note_metadata or not note_metadata.get('cover_image_url'):
+            raise ValueError(
+                "Either note_id (for smart mode) or note_metadata (for legacy mode) must be provided. "
+                "note_metadata must contain 'cover_image_url' field."
+            )
 
         try:
-            # Collect image URLs (1 cover + max 4 inner images)
-            image_urls = [note_meta_data.cover_image_url]
+            # Reconstruct NoteMetaData from serialized dict
+            actual_meta_data = NoteMetaData(**note_metadata)
 
-            if note_meta_data.inner_image_urls:
+            # Collect image URLs (1 cover + max 4 inner images)
+            image_urls = [actual_meta_data.cover_image_url]
+
+            if actual_meta_data.inner_image_urls:
                 # Limit to max_inner_images
-                inner_urls = note_meta_data.inner_image_urls[:self.max_inner_images]
+                inner_urls = actual_meta_data.inner_image_urls[:self.max_inner_images]
                 image_urls.extend(inner_urls)
 
             # Analyze images with vision model
             analysis_dict = self._analyze_with_vision_model(
-                note_meta_data=note_meta_data,
+                note_meta_data=actual_meta_data,
                 image_urls=image_urls
             )
 
             # Create VisionAnalysisResult
             result = VisionAnalysisResult(
-                note_id=note_id or "unknown",
+                note_id=note_id or note_metadata.get('note_id', 'unknown'),
                 **analysis_dict
             )
 
@@ -136,6 +202,16 @@ class MultiModalVisionTool(BaseTool):
         # Construct analysis prompt
         prompt = self._build_vision_prompt(note_meta_data)
 
+        # ========== REQUEST LOGGING ==========
+        logger.info("=" * 80)
+        logger.info("LLM REQUEST - MultiModal Vision Analysis")
+        logger.info("=" * 80)
+        logger.info(f"Model: {self.model}")
+        logger.info(f"Note ID: {note_meta_data.note_id if hasattr(note_meta_data, 'note_id') else 'unknown'}")
+        logger.info(f"Image URLs: {image_urls}")
+        logger.info(f"Prompt (first 500 chars):\n{prompt[:500]}...")
+        logger.info("=" * 80)
+
         try:
             # Build multi-image message content
             message_content = [
@@ -167,6 +243,14 @@ class MultiModalVisionTool(BaseTool):
 
             # Extract and parse response
             content = response.choices[0].message.content
+
+            # ========== RESPONSE LOGGING ==========
+            logger.info("=" * 80)
+            logger.info("LLM RESPONSE - MultiModal Vision Analysis")
+            logger.info("=" * 80)
+            logger.info(f"Response length: {len(content)} characters")
+            logger.info(f"Full response content:\n{content}")
+            logger.info("=" * 80)
 
             return self._parse_vision_response(content)
 
@@ -266,23 +350,33 @@ class MultiModalVisionTool(BaseTool):
         try:
             # Try to extract JSON from response
             # Handle both pure JSON and JSON in markdown code blocks
+            logger.info("=" * 80)
+            logger.info("JSON EXTRACTION")
+            logger.info("=" * 80)
+
             if "```json" in content:
                 json_start = content.find("```json") + 7
                 json_end = content.find("```", json_start)
                 json_str = content[json_start:json_end].strip()
-                logger.info("DEBUG: Extracted JSON from ```json block")
+                logger.info("Extraction method: ```json block")
+                logger.info(f"Start position: {json_start}, End position: {json_end}")
             elif "```" in content:
                 json_start = content.find("```") + 3
                 json_end = content.find("```", json_start)
                 json_str = content[json_start:json_end].strip()
-                logger.info("DEBUG: Extracted JSON from ``` block")
+                logger.info("Extraction method: ``` block")
+                logger.info(f"Start position: {json_start}, End position: {json_end}")
             else:
                 json_str = content.strip()
-                logger.info("DEBUG: Using full content as JSON")
+                logger.info("Extraction method: Using full content as JSON")
 
+            logger.info(f"Extracted JSON length: {len(json_str)} characters")
+            logger.info(f"Extracted JSON content:\n{json_str}")
+            logger.info("=" * 80)
 
             data = json.loads(json_str)
-            logger.info("DEBUG: JSON parsing successful!")
+            logger.info("✓ JSON parsing successful!")
+            logger.info("=" * 80)
 
             # Define all required fields with defaults
             required_fields = {

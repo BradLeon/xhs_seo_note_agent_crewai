@@ -1,65 +1,113 @@
-# Simplified Task Configuration for testing CompetitorAnalyst only
-# 简化版任务配置，仅用于测试竞品分析师
+# Sequential Task Configuration - 4 focused tasks for reliable execution
+# 顺序任务配置 - 4个聚焦任务确保可靠执行
 
-analyze_competitors:
+aggregate_statistics:
   description: |
-    分析target_notes在关键词'{keyword}'下的成功模式。
+    **任务目标**: 聚合竞品笔记的统计数据
 
-    输入数据:
-    - target_notes: {target_notes}
-    - keyword: {keyword}
+    调用 data_aggregator() 工具（无需参数），自动从共享上下文获取 {target_notes_count} 条笔记数据。
 
-    按以下步骤执行:
+    工具返回 AggregatedMetrics JSON，包含:
+    - prediction_stats: 各预测指标的统计摘要 (mean, median, std, min, max)
+    - tag_frequencies: 标签分布频率
+    - tag_modes: 标签众数
+    - sample_size: 样本数量
 
-    **步骤1: 统计聚合**
-    - 调用 DataAggregatorTool，传入所有 target_notes
-    - 获取每个指标的统计数据（mean, median, std, outliers）
-    - 保存结果为 aggregated_stats，用于后续分析
+    将结果保存，供后续任务使用。
 
-    **步骤2: 特征提取（构建features_matrix）**
-    - 对每个 target_note 逐个处理:
-      * 调用 NLPAnalysisTool(note.meta_data) 获取文本特征
-        - 提取30+个文本特征（title_pattern, opening_strategy, pain_points等）
-      * 调用 MultiModalVisionTool(note.meta_data) 获取视觉特征
-        - 提取17+个视觉特征（thumbnail_appeal, color_scheme, visual_tone等）
-      * 将该笔记的所有特征存储在 features_matrix[note.note_id] 中
-    - 最终得到完整的 features_matrix 字典
+  expected_output: "AggregatedMetrics JSON (包含所有预测指标的统计摘要)"
+  agent: competitor_analyst
 
-    **步骤3: 指标分析（metric-centric）**
-    - 对每个预测指标 (ctr, comment_rate, collect_rate, like_rate, sort_score2等):
-      a. 方差过滤：计算该指标的变异系数(CV)
-         - 如果 CV < 0.3（低方差）：使用所有笔记
-         - 如果 CV >= 0.3（高方差）：使用该指标top 50%的笔记
-      b. 特征统计：对过滤后的笔记，统计相关特征的prevalence
-         - 计算每个特征在高分笔记中的出现比例
-         - 识别prevalence > 70%的显著特征
-      c. 生成 MetricSuccessProfile:
-         - metric_name: 指标名称
-         - sample_size: 分析的笔记数量
-         - variance_level: low/high
-         - feature_analyses: 每个特征的详细分析
-         - metric_success_narrative: 整体叙述
 
-    **步骤4: 跨指标总结**
-    - 从所有 MetricSuccessProfile 中提取共性模式
-    - 识别 3-5 个关键成功因素（key_success_factors）
-    - 生成简洁的爆款公式总结（viral_formula_summary）
+extract_features:
+  description: |
+    **任务目标**: 对所有笔记提取文本和视觉特征
 
-    **步骤5: 生成报告**
-    - 创建 SuccessProfileReport，包含:
-      * keyword: 目标关键词
-      * sample_size: 样本数量
-      * aggregated_stats: 聚合统计（来自步骤1）
-      * metric_profiles: 指标分析列表（来自步骤3）
-      * key_success_factors: 关键成功因素（来自步骤4）
-      * viral_formula_summary: 爆款公式（来自步骤4）
-      * analysis_timestamp: 分析时间戳
+    你需要分析 {target_notes_count} 条笔记。这些笔记在上游任务 (aggregate_statistics) 中已被分析过。
 
-    **重要提示:**
-    - 每个工具调用都应该检查返回结果，处理可能的错误
-    - features_matrix 是核心数据结构，必须完整构建
-    - 使用 metric-centric 方式组织分析结果（按指标而非特征）
+    **获取笔记ID列表**:
+    从上游任务 aggregate_statistics 的输出中，可以找到所有笔记的ID信息。
+    笔记ID类似于: "5e96b4f700000000010040e6", "5f805cb50000000001004f7b" 等。
 
-  expected_output: "SuccessProfileReport (JSON格式，包含完整的竞品分析结果)"
+    **执行步骤** (对每条笔记):
+    1. 调用 nlp_text_analysis(note_id="笔记ID")
+       - ⚠️ 重要: 只传 note_id 参数，工具会自动获取该笔记的文本内容并分析
+       - 返回 30+ 个文本特征 (title_pattern, opening_strategy, pain_points 等)
+
+    2. 调用 multimodal_vision_analysis(note_id="笔记ID")
+       - ⚠️ 重要: 只传 note_id 参数，工具会自动获取该笔记的图片并分析
+       - 返回 17+ 个视觉特征 (thumbnail_appeal, color_scheme, visual_tone 等)
+
+    3. 将两个工具的分析结果合并到 features_matrix
+
+    构建完整的 features_matrix: {{note_id: {{text_features..., visual_features...}}}}
+
+    **禁止事项**:
+    - ❌ 不要创造或想象笔记ID
+    - ❌ 不要创造或想象笔记内容
+    - ❌ 不要传递 note_metadata 参数（工具会自动获取）
+    - ✅ 只使用真实的笔记ID（来自上游任务）
+    - ✅ 让工具自动处理数据获取
+
+  expected_output: "Features matrix JSON (dict mapping note_id to combined text+visual features)"
+  agent: competitor_analyst
+
+
+analyze_metrics:
+  description: |
+    **任务目标**: 对所有预测指标执行metric-centric分析
+
+    使用上游任务的 aggregated_stats 和 features_matrix，对以下10个指标逐一分析:
+    1. ctr (点击率)
+    2. comment_rate (评论率)
+    3. interaction_rate (互动率)
+    4. sort_score2 (排序分数)
+    5. like_rate (点赞率)
+    6. share_rate (分享率)
+    7. follow_rate (关注率)
+    8. collect_rate (收藏率) - 即 fav_rate
+    9. ces_rate (综合互动率)
+    10. impression (曝光量)
+
+    对每个指标:
+    a. 计算变异系数 (CV = std/mean)，判断方差级别
+    b. 如果 CV >= 0.3: 过滤出该指标 top 50% 的笔记
+    c. 统计这些笔记中各特征的 prevalence (出现比例)
+    d. 识别 prevalence > 70% 的显著特征
+    e. 为每个特征生成 FeatureAnalysis (prevalence_pct, why_it_works, creation_formula)
+    f. 生成 MetricSuccessProfile (包含 metric_name, sample_size, variance_level, feature_analyses, metric_success_narrative)
+
+    **重要**: 必须分析全部10个指标，生成10个 MetricSuccessProfile。
+
+  expected_output: "List of 10 MetricSuccessProfile objects (JSON array)"
+  agent: competitor_analyst
+
+
+generate_report:
+  description: |
+    **任务目标**: 生成最终的竞品成功模式分析报告
+
+    基于上游任务的结果:
+    - aggregated_stats (来自 Task 1)
+    - metric_profiles (来自 Task 3 的10个分析结果)
+
+    执行跨指标总结:
+    1. 从所有 MetricSuccessProfile 中提取共性模式
+    2. 识别 3-5 个关键成功因素 (key_success_factors)
+       - 每个因素包含: factor, impact_level, supporting_evidence
+    3. 生成爆款公式总结 (viral_formula_summary)
+       - 简洁的文本描述 (>50 characters)
+       - 总结可复制的创作公式
+
+    创建 SuccessProfileReport，包含:
+    - keyword: '{keyword}'
+    - sample_size: {target_notes_count}
+    - aggregated_stats: 聚合统计数据
+    - metric_profiles: 10个指标分析
+    - key_success_factors: 3-5个关键成功因素
+    - viral_formula_summary: 爆款公式总结
+    - analysis_timestamp: 当前时间戳
+
+  expected_output: "Complete SuccessProfileReport (JSON format)"
   agent: competitor_analyst
   output_file: "outputs/success_profile_report.json"

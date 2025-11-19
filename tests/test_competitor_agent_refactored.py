@@ -26,7 +26,7 @@ try:
 except ImportError:
     print("⚠ python-dotenv not installed, using shell environment variables\n")
 
-from xhs_seo_optimizer.models.note import Note
+from xhs_seo_optimizer.models.note import Note, ComplexInput
 from xhs_seo_optimizer.models.reports import SuccessProfileReport
 from xhs_seo_optimizer.crew_simple import XhsSeoOptimizerCrewSimple
 import logging
@@ -124,21 +124,22 @@ def test_with_crew():
     crew = XhsSeoOptimizerCrewSimple().crew()
     print("✓ Crew 创建成功\n")
 
-    # Prepare inputs
+    # Prepare inputs using ComplexInput wrapper (following CrewAI official pattern)
     keyword = "老爸测评dha推荐哪几款"
-    inputs = {
-        "target_notes": target_notes,
-        "keyword": keyword,
-        "owned_note": None  # Not needed for competitor analysis only
-    }
+    complex_input = ComplexInput(
+        target_notes=target_notes,
+        keyword=keyword,
+        owned_note=None  # Not needed for competitor analysis only
+    )
 
     print(f"开始使用 CrewAI 分析竞品笔记 (关键词: {keyword})...")
     print("注意: 这是 agent 协调 atomic tools 的方式，不是单一 orchestrator tool")
+    print(f"✓ 使用 ComplexInput 包装器序列化输入 ({len(target_notes)} 条笔记)")
     print("-" * 80 + "\n")
 
     try:
-        # Run the crew
-        result = crew.kickoff(inputs=inputs)
+        # Run the crew with serialized inputs (model_dump() converts Pydantic to dict)
+        result = crew.kickoff(inputs=complex_input.model_dump())
 
         print("\n" + "-" * 80)
         print("✓ 分析完成！\n")
@@ -175,18 +176,23 @@ def test_with_crew():
 
 
 def test_helper_functions():
-    """Test the helper functions directly (for debugging)."""
+    """Test the helper functions directly with shared context (for debugging)."""
     print("\n" + "=" * 80)
-    print("测试辅助函数 (直接调用)")
+    print("测试辅助函数 (使用共享上下文)")
     print("=" * 80 + "\n")
 
     # Load target notes
     notes_path = project_root / "docs" / "target_notes.json"
     target_notes = load_target_notes(str(notes_path))
 
-    # Import helper functions
+    # Import context and tools
+    from xhs_seo_optimizer.context import CrewContext
+    from xhs_seo_optimizer.tools import (
+        DataAggregatorTool,
+        NLPAnalysisTool,
+        MultiModalVisionTool
+    )
     from xhs_seo_optimizer.analysis_helpers import (
-        aggregate_statistics,
         extract_features_matrix,
         filter_notes_by_metric_variance,
         analyze_metric_success,
@@ -197,14 +203,40 @@ def test_helper_functions():
     keyword = "老爸测评dha推荐哪几款"
 
     try:
-        # Step 1: Aggregate statistics
-        print("步骤1: 统计聚合...")
-        aggregated_stats = aggregate_statistics(target_notes)
-        print(f"✓ 完成: {aggregated_stats.sample_size} 笔记, "
-              f"{aggregated_stats.outliers_removed} 异常值移除\n")
+        # Create shared context
+        print("创建共享上下文...")
+        context = CrewContext()
 
-        # Step 2: Extract features
-        print("步骤2: 特征提取...")
+        # Store notes in context
+        notes_key = context.store_notes("target_notes", target_notes)
+        for note in target_notes:
+            meta_key = f"note_{note.note_id}_metadata"
+            context.store_data(meta_key, note.meta_data, "note_metadata")
+        print(f"✓ 存储了 {len(target_notes)} 条笔记到上下文\n")
+
+        # Step 1: Aggregate statistics using DataAggregatorTool with context
+        print("步骤1: 统计聚合 (使用 DataAggregatorTool with context)...")
+        aggregator = DataAggregatorTool(context=context)
+        aggregated_json = aggregator._run(notes_key="target_notes")
+        aggregated_stats = json.loads(aggregated_json)
+        print(f"✓ 完成: {aggregated_stats['sample_size']} 笔记, "
+              f"{aggregated_stats['outliers_removed']} 异常值移除\n")
+
+        # Step 2: Extract features (demonstrate tool usage with context)
+        print("步骤2: 特征提取 (演示工具使用上下文)...")
+
+        # Test NLP tool with context
+        nlp_tool = NLPAnalysisTool(context=context)
+        first_note = target_notes[0]
+        nlp_result = nlp_tool._run(note_meta_data_key=f"note_{first_note.note_id}_metadata")
+        print(f"  - NLP分析工具测试: 成功分析了note_{first_note.note_id}")
+
+        # Test Vision tool with context
+        vision_tool = MultiModalVisionTool(context=context)
+        vision_result = vision_tool._run(note_meta_data_key=f"note_{first_note.note_id}_metadata")
+        print(f"  - 视觉分析工具测试: 成功分析了note_{first_note.note_id}")
+
+        # Continue with full feature extraction
         features_matrix = extract_features_matrix(target_notes)
         print(f"✓ 完成: 提取了 {len(features_matrix)} 条笔记的特征\n")
 

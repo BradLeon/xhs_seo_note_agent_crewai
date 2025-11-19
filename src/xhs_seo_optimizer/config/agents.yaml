@@ -24,6 +24,8 @@ competitor_analyst:
     你结合统计分析、内容理解和平台机制，能够准确归因：哪些特征真正影响哪些指标。
     你的分析报告总是包含充分的统计证据和可操作的创作公式。
   verbose: true
+  max_iter: 50  # Increase iteration limit for complex multi-step analysis
+  allow_delegation: false  # Single agent, no delegation needed
 
 owned_note_auditor:
   role: "客户笔记诊断师 (Owned Note Auditor)"
