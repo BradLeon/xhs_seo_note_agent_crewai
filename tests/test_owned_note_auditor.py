@@ -1,9 +1,8 @@
 """Integration tests for OwnedNoteAuditor crew.
 
-Tests the complete workflow of auditing owned notes to identify:
-- Metric weaknesses and strengths
-- Content weaknesses and strengths
-- Overall diagnosis
+Tests the complete workflow of objective content understanding for owned notes:
+- Feature extraction (text + visual)
+- Objective feature summary (no strength/weakness judgment)
 """
 
 import json
@@ -36,23 +35,25 @@ import logging
 logging.basicConfig(level=logging.INFO)
 
 
-def load_owned_note(json_path: str) -> dict:
+def load_owned_note(json_path: str) -> Note:
     """Load owned note from JSON file.
 
     Args:
         json_path: Path to owned_note.json
 
     Returns:
-        Dict with owned note data
+        Note object
     """
     print(f"Loading owned note from: {json_path}")
 
     with open(json_path, 'r', encoding='utf-8') as f:
         data = json.load(f)
 
-    print(f"✓ Loaded owned note: {data.get('note_id', 'unknown')}\n")
+    # Convert flat JSON to Note object using Note.from_json()
+    note = Note.from_json(data)
+    print(f"✓ Loaded owned note: {note.note_id}\n")
 
-    return data
+    return note
 
 
 def print_audit_report_summary(report: AuditReport):
@@ -70,32 +71,9 @@ def print_audit_report_summary(report: AuditReport):
     print(f"关键词: {report.keyword}")
     print(f"审计时间: {report.audit_timestamp}")
 
-    # Current metrics
-    print(f"\n当前指标值:")
-    for metric_name, value in report.current_metrics.items():
-        print(f"  - {metric_name}: {value:.6f}")
-
-    # Metric analysis
-    print(f"\n指标分析:")
-    print(f"  弱项指标 ({len(report.weak_metrics)}): {', '.join(report.weak_metrics) if report.weak_metrics else '无'}")
-    print(f"  强项指标 ({len(report.strong_metrics)}): {', '.join(report.strong_metrics) if report.strong_metrics else '无'}")
-
-    # Content weaknesses
-    print(f"\n内容弱点 ({len(report.content_weaknesses)}):")
-    for i, weakness in enumerate(report.content_weaknesses, 1):
-        print(f"  {i}. {weakness}")
-
-    # Content strengths
-    print(f"\n内容优势 ({len(report.content_strengths)}):")
-    if report.content_strengths:
-        for i, strength in enumerate(report.content_strengths, 1):
-            print(f"  {i}. {strength}")
-    else:
-        print("  (无明显优势)")
-
-    # Overall diagnosis
-    print(f"\n整体诊断:")
-    print(f"  {report.overall_diagnosis}")
+    # Feature summary
+    print(f"\n客观特征摘要:")
+    print(f"  {report.feature_summary}")
 
     # Feature details (summary)
     print(f"\n提取的特征:")
@@ -124,7 +102,7 @@ class TestOwnedNoteAuditor:
     @pytest.fixture
     def crew(self):
         """Create OwnedNoteAuditor crew instance."""
-        return XhsSeoOptimizerCrewOwnedNote()
+        return XhsSeoOptimizerCrewOwnedNote().crew()
 
     def test_basic_execution(self, crew, owned_note_data):
         """Test basic crew execution without errors."""
@@ -135,7 +113,7 @@ class TestOwnedNoteAuditor:
         # Run crew
         result = crew.kickoff(inputs={
             "owned_note": owned_note_data,
-            "keyword": "DHA"
+            "keyword": "老爸测评dha推荐哪几款"
         })
 
         # Verify result exists
@@ -164,52 +142,33 @@ class TestOwnedNoteAuditor:
 
         result = crew.kickoff(inputs={
             "owned_note": owned_note_data,
-            "keyword": "DHA"
+            "keyword": "老爸测评dha推荐哪几款"
         })
 
         audit_report = result.pydantic
 
         # Verify basic fields
-        assert audit_report.note_id == owned_note_data["note_id"]
-        assert audit_report.keyword == "DHA"
+        assert audit_report.note_id == owned_note_data.note_id
+        assert audit_report.keyword == "老爸测评dha推荐哪几款"
         print("✓ Basic fields (note_id, keyword) validated")
-
-        # Verify current_metrics
-        assert isinstance(audit_report.current_metrics, dict)
-        assert len(audit_report.current_metrics) > 0
-        # Should have 10 metrics
-        expected_metrics = {
-            'ctr', 'comment_rate', 'interaction_rate', 'sort_score2',
-            'like_rate', 'share_rate', 'follow_rate', 'collect_rate',
-            'ces_rate', 'impression'
-        }
-        # At least some of these metrics should be present
-        assert len(audit_report.current_metrics) >= 5
-        print(f"✓ Current metrics validated ({len(audit_report.current_metrics)} metrics)")
 
         # Verify features
         assert audit_report.text_features is not None
         assert audit_report.visual_features is not None
-        assert audit_report.text_features.note_id == owned_note_data["note_id"]
-        assert audit_report.visual_features.note_id == owned_note_data["note_id"]
+        assert audit_report.text_features.note_id == owned_note_data.note_id
+        assert audit_report.visual_features.note_id == owned_note_data.note_id
         print("✓ Extracted features validated")
 
-        # Verify metric analysis
-        assert isinstance(audit_report.weak_metrics, list)
-        assert isinstance(audit_report.strong_metrics, list)
-        print(f"✓ Metric analysis validated (weak: {len(audit_report.weak_metrics)}, strong: {len(audit_report.strong_metrics)})")
-
-        # Verify content analysis
-        assert isinstance(audit_report.content_weaknesses, list)
-        assert len(audit_report.content_weaknesses) > 0, "content_weaknesses cannot be empty (validator should enforce this)"
-        assert isinstance(audit_report.content_strengths, list)
-        print(f"✓ Content analysis validated (weaknesses: {len(audit_report.content_weaknesses)}, strengths: {len(audit_report.content_strengths)})")
-
-        # Verify overall diagnosis
-        assert isinstance(audit_report.overall_diagnosis, str)
-        assert 50 <= len(audit_report.overall_diagnosis) <= 200, \
-            f"overall_diagnosis must be 50-200 chars, got {len(audit_report.overall_diagnosis)}"
-        print(f"✓ Overall diagnosis validated ({len(audit_report.overall_diagnosis)} chars)")
+        # Verify feature summary
+        assert isinstance(audit_report.feature_summary, str)
+        assert 50 <= len(audit_report.feature_summary) <= 300, \
+            f"feature_summary must be 50-300 chars, got {len(audit_report.feature_summary)}"
+        # Should not contain judgment words
+        judgment_words = ['好', '坏', '弱', '差', '优秀', '不足', 'weak', 'bad', 'poor', 'strong', 'excellent']
+        lower_summary = audit_report.feature_summary.lower()
+        found_judgments = [word for word in judgment_words if word in lower_summary]
+        assert len(found_judgments) == 0, f"feature_summary should be objective, found: {found_judgments}"
+        print(f"✓ Feature summary validated ({len(audit_report.feature_summary)} chars, objective)")
 
         # Verify timestamp
         assert audit_report.audit_timestamp is not None
@@ -226,7 +185,7 @@ class TestOwnedNoteAuditor:
 
         result = crew.kickoff(inputs={
             "owned_note": owned_note_data,
-            "keyword": "DHA"
+            "keyword": "老爸测评dha推荐哪几款"
         })
 
         audit_report = result.pydantic
@@ -250,6 +209,36 @@ class TestOwnedNoteAuditor:
         assert len(visual_features.color_scheme) > 0
         print("✓ Visual features are complete and meaningful")
 
+    def test_feature_summary_objectivity(self, crew, owned_note_data):
+        """Test that feature summary is objective (no judgment)."""
+        print("\n" + "=" * 80)
+        print("TEST: Feature Summary Objectivity")
+        print("=" * 80)
+
+        result = crew.kickoff(inputs={
+            "owned_note": owned_note_data,
+            "keyword": "老爸测评dha推荐哪几款"
+        })
+
+        audit_report = result.pydantic
+
+        # Should be objective description
+        summary = audit_report.feature_summary
+
+        # Check length
+        assert 50 <= len(summary) <= 300, f"Summary length {len(summary)} not in range [50, 300]"
+
+        # Should not contain judgment words
+        judgment_words = ['好', '坏', '弱', '差', '优秀', '不足', 'weak', 'bad', 'poor', 'strong', 'excellent']
+        lower_summary = summary.lower()
+        found_judgments = [word for word in judgment_words if word in lower_summary]
+
+        assert len(found_judgments) == 0, \
+            f"Feature summary should be objective, but found judgment words: {found_judgments}\nSummary: {summary}"
+
+        print(f"✓ Feature summary is objective ({len(summary)} chars)")
+        print(f"  Summary: {summary}")
+
     def test_output_file_matches_pydantic(self, crew, owned_note_data):
         """Test that output file matches Pydantic model."""
         print("\n" + "=" * 80)
@@ -258,7 +247,7 @@ class TestOwnedNoteAuditor:
 
         result = crew.kickoff(inputs={
             "owned_note": owned_note_data,
-            "keyword": "DHA"
+            "keyword": "老爸测评dha推荐哪几款"
         })
 
         audit_report_from_result = result.pydantic
@@ -275,7 +264,7 @@ class TestOwnedNoteAuditor:
         assert audit_report_from_file.note_id == audit_report_from_result.note_id
         assert audit_report_from_file.keyword == audit_report_from_result.keyword
         assert audit_report_from_file.audit_timestamp == audit_report_from_result.audit_timestamp
-        assert len(audit_report_from_file.content_weaknesses) == len(audit_report_from_result.content_weaknesses)
+        assert audit_report_from_file.feature_summary == audit_report_from_result.feature_summary
         print("✓ Output file matches Pydantic model")
 
     def test_edge_case_missing_note_id(self, crew):
@@ -331,13 +320,13 @@ def run_manual_test():
     owned_note_data = load_owned_note(str(docs_path))
 
     # Create crew
-    crew = XhsSeoOptimizerCrewOwnedNote()
+    crew = XhsSeoOptimizerCrewOwnedNote().crew()
 
     # Run audit
     print("\nRunning audit...\n")
     result = crew.kickoff(inputs={
         "owned_note": owned_note_data,
-        "keyword": "DHA"
+        "keyword": "老爸测评dha推荐哪几款"
     })
 
     # Print report

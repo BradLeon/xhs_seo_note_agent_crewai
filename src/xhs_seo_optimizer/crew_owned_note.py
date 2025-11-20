@@ -1,9 +1,12 @@
-"""Owned Note Auditor crew for diagnosing owned note weaknesses.
+"""Owned Note Auditor crew for objective content understanding.
 
-This crew analyzes owned (self-published) notes to identify:
-- Metric weaknesses (which prediction metrics are underperforming)
-- Content gaps (missing or weak features)
-- Content strengths (features that are already working well)
+This crew provides objective analysis of owned (self-published) notes:
+- Feature extraction (text + visual analysis via NLP and Vision tools)
+- Objective feature summary (no strength/weakness judgment)
+
+Note: Strength/weakness judgment requires competitor comparison,
+which will be handled by GapFinder agent (future implementation).
+Feature attribution can be retrieved via attribution.py rules if needed.
 """
 
 from crewai import Agent, Crew, Task, Process, LLM
@@ -21,13 +24,14 @@ from xhs_seo_optimizer.tools import (
 
 @CrewBase
 class XhsSeoOptimizerCrewOwnedNote:
-    """Crew for auditing owned notes.
+    """Crew for objective content understanding of owned notes.
 
     This crew includes:
     - owned_note_auditor agent
-    - 4 sequential tasks: extract features → analyze metrics → identify weaknesses → generate report
+    - 2 sequential tasks: extract features → generate report
 
     Uses sequential process with a single agent executing all tasks.
+    Provides objective analysis without strength/weakness judgment (requires GapFinder).
 
     Following official CrewAI pattern: complex objects are serialized to dicts
     using model_dump() in @before_kickoff, then stored in shared_context for tools.
@@ -43,10 +47,11 @@ class XhsSeoOptimizerCrewOwnedNote:
             print(f"使用代理 (通过环境变量): {proxy}")
 
         # LLM configuration for OpenRouter (same as CompetitorAnalyst)
+        # Use temperature=0.0 for report generation to ensure valid JSON output
         llm_config = {
             'base_url': 'https://openrouter.ai/api/v1',
             'api_key': os.getenv("OPENROUTER_API_KEY", ""),
-            'temperature': 0.1
+            'temperature': 0.0
         }
 
         self.custom_llm = LLM(
@@ -113,6 +118,14 @@ class XhsSeoOptimizerCrewOwnedNote:
         # Also store in inputs for metadata and variable substitution in YAML
         inputs["note_id"] = owned_note_data["note_id"]
         inputs["owned_note_data"] = owned_note_data
+        # Flatten prediction dict for YAML variable substitution
+        # Filter out note_id and non-numeric fields to match Dict[str, float] schema
+        prediction_dict = owned_note_data["prediction"]
+        current_metrics = {
+            k: v for k, v in prediction_dict.items()
+            if k != "note_id" and isinstance(v, (int, float))
+        }
+        inputs["current_metrics"] = current_metrics
         inputs["validated"] = True
 
         return inputs
@@ -121,8 +134,9 @@ class XhsSeoOptimizerCrewOwnedNote:
     def owned_note_auditor(self) -> Agent:
         """自营笔记审计员 agent.
 
-        The agent that analyzes owned notes to identify weaknesses and strengths.
-        Uses NLP and Vision tools to extract features, then diagnoses issues.
+        The agent that provides objective content understanding of owned notes.
+        Uses NLP and Vision tools to extract features and analyze feature attribution.
+        Does not make strength/weakness judgments (requires GapFinder).
         """
         return Agent(
             config=self.agents_config['owned_note_auditor'],
@@ -149,59 +163,20 @@ class XhsSeoOptimizerCrewOwnedNote:
         )
 
     @task
-    def analyze_metric_performance_task(self) -> Task:
-        """Task 2: 分析指标表现.
-
-        Analyzes the 10 prediction metrics to identify which are underperforming
-        (weak_metrics) and which are strong (strong_metrics).
-
-        Depends on Task 1 for context.
-        """
-        return Task(
-            config=self.tasks_config['analyze_metric_performance'],
-            agent=self.owned_note_auditor(),
-            context=[self.extract_content_features_task()]
-        )
-
-    @task
-    def identify_weaknesses_task(self) -> Task:
-        """Task 3: 识别弱点和优势.
-
-        Compares extracted features against best practices to identify:
-        - content_weaknesses: Missing or weak features
-        - content_strengths: Features that are already working well
-
-        Depends on Tasks 1 & 2 for comprehensive analysis.
-        """
-        return Task(
-            config=self.tasks_config['identify_weaknesses'],
-            agent=self.owned_note_auditor(),
-            context=[
-                self.extract_content_features_task(),
-                self.analyze_metric_performance_task()
-            ]
-        )
-
-    @task
     def generate_audit_report_task(self) -> Task:
-        """Task 4: 生成审计报告.
+        """Task 2: 生成审计报告.
 
-        Generates final AuditReport with all findings:
-        - current_metrics
+        Generates final AuditReport with objective analysis:
         - text_features, visual_features
-        - weak_metrics, strong_metrics
-        - content_weaknesses, content_strengths
-        - overall_diagnosis
+        - feature_summary (objective description, no judgment)
 
-        Depends on all previous tasks.
+        Depends on extract_content_features_task.
         """
         return Task(
             config=self.tasks_config['generate_audit_report'],
             agent=self.owned_note_auditor(),
             context=[
-                self.extract_content_features_task(),
-                self.analyze_metric_performance_task(),
-                self.identify_weaknesses_task()
+                self.extract_content_features_task()
             ],
             output_pydantic=AuditReport,  # Final output validation
             output_file="outputs/audit_report.json"
@@ -211,15 +186,13 @@ class XhsSeoOptimizerCrewOwnedNote:
     def crew(self) -> Crew:
         """Assemble the owned note auditor crew.
 
-        Uses sequential process with 4 chained tasks:
+        Uses sequential process with 2 chained tasks:
         1. extract_content_features_task
-        2. analyze_metric_performance_task (depends on 1)
-        3. identify_weaknesses_task (depends on 1, 2)
-        4. generate_audit_report_task (depends on 1, 2, 3)
+        2. generate_audit_report_task (depends on 1)
         """
         return Crew(
             agents=self.agents,  # Contains owned_note_auditor
-            tasks=self.tasks,    # Contains 4 sequential tasks
+            tasks=self.tasks,    # Contains 2 sequential tasks
             process=Process.sequential,  # Execute tasks in order
             verbose=True
         )

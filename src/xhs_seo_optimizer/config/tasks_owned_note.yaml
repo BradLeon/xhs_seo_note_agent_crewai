@@ -1,7 +1,7 @@
 # Task Configuration for Owned Note Auditor Crew
 # 自营笔记审计员 Crew 的任务配置
 #
-# 4 sequential tasks: extract features → analyze metrics → identify weaknesses → generate report
+# 2 sequential tasks: extract features → generate report
 
 extract_content_features:
   description: |
@@ -25,6 +25,7 @@ extract_content_features:
     **禁止事项**:
     - ❌ 不要创造或想象笔记内容
     - ❌ 不要传递 note_metadata 参数（工具会自动获取）
+    - ❌ 不要对特征做"好坏"判断（保持客观）
     - ✅ 只使用真实的笔记ID: {note_id}
     - ✅ 让工具自动处理数据获取
 
@@ -32,161 +33,70 @@ extract_content_features:
   agent: owned_note_auditor
 
 
-analyze_metric_performance:
-  description: |
-    **任务目标**: 分析10个预测指标的表现，识别弱项和强项
-
-    基于上游任务提取的特征，以及笔记的 prediction 数据，分析以下10个指标:
-    1. ctr (点击率)
-    2. comment_rate (评论率)
-    3. interaction_rate (互动率)
-    4. sort_score2 (排序分数)
-    5. like_rate (点赞率)
-    6. share_rate (分享率)
-    7. follow_rate (关注率)
-    8. collect_rate (收藏率) - 即 fav_rate
-    9. ces_rate (综合互动率)
-    10. impression (曝光量)
-
-    **执行步骤**:
-    1. 读取笔记 {note_id} 的所有预测指标值 (从 shared context 的 owned_note_data.prediction)
-
-    2. 对每个指标，根据以下阈值判断表现:
-       - ctr: 弱 <0.05, 强 >0.10
-       - comment_rate: 弱 <0.001, 强 >0.003
-       - sort_score2: 弱 <0.35, 强 >0.50
-       - interaction_rate: 弱 <0.02, 强 >0.05
-       - like_rate: 弱 <0.03, 强 >0.06
-       - share_rate: 弱 <0.005, 强 >0.015
-       - follow_rate: 弱 <0.01, 强 >0.03
-       - collect_rate: 弱 <0.01, 强 >0.03
-       - ces_rate: 弱 <0.04, 强 >0.10
-       - impression: 弱 <500, 强 >2000
-
-    3. 生成两个列表:
-       - weak_metrics: 表现不佳的指标名称列表 (e.g., ["ctr", "sort_score2"])
-       - strong_metrics: 表现优秀的指标名称列表 (e.g., ["comment_rate"])
-
-    **重要**: 必须分析全部10个指标。
-
-  expected_output: "Metric performance analysis (weak_metrics list and strong_metrics list)"
-  agent: owned_note_auditor
-
-
-identify_weaknesses:
-  description: |
-    **任务目标**: 识别内容弱点和优势
-
-    基于上游任务的结果:
-    - text_features (TextAnalysisResult from Task 1)
-    - visual_features (VisionAnalysisResult from Task 1)
-    - weak_metrics (from Task 2)
-    - strong_metrics (from Task 2)
-
-    **执行步骤**:
-
-    1. **分析内容弱点** (content_weaknesses):
-       对比提取的特征与最佳实践，找出问题:
-
-       a. 标题弱点 (如果 ctr 在 weak_metrics 中):
-          - 检查 title_pattern: 是否有吸引力?
-          - 检查 title_emotion: 情感是否到位?
-          - 检查 title_keywords: 关键词是否突出?
-
-       b. 开头弱点 (如果 ctr 或 interaction_rate 在 weak_metrics 中):
-          - 检查 opening_hook: 钩子是否强力?
-          - 检查 opening_impact: 冲击力是否足够?
-
-       c. 正文弱点 (如果 comment_rate, interaction_rate 在 weak_metrics 中):
-          - 检查 pain_points: 痛点挖掘是否到位?
-          - 检查 value_propositions: 价值主张是否清晰?
-          - 检查 content_framework: 框架是否完整?
-
-       d. 视觉弱点 (如果 ctr 在 weak_metrics 中):
-          - 检查 thumbnail_appeal: 封面吸引力如何?
-          - 检查 color_scheme: 色彩方案是否合适?
-          - 检查 visual_tone: 视觉调性是否统一?
-
-       生成具体、可操作的弱点描述 (中文)，例如:
-       - "标题缺乏情感钩子，未能激发用户点击欲望"
-       - "封面视觉吸引力不足，色彩方案单调"
-       - "正文缺乏痛点挖掘，价值主张不够清晰"
-
-    2. **分析内容优势** (content_strengths):
-       识别已有的强项特征:
-
-       a. 如果某些 strong_metrics 存在，找出对应的优秀特征:
-          - comment_rate 高 → 检查 pain_points, credibility_signals, emotional_triggers
-          - ctr 高 → 检查 title_pattern, thumbnail_appeal
-          - interaction_rate 高 → 检查 opening_hook, ending_cta
-
-       b. 生成具体的优势描述 (中文)，例如:
-          - "标题采用疑问句式，情感诉求强烈"
-          - "正文痛点挖掘深刻，credibility信号明确"
-          - "视觉叙事连贯，真实感和情绪基调把握准确"
-
-    **重要**:
-    - content_weaknesses 不能为空（每个笔记都有改进空间）
-    - 每个弱点/优势描述应具体、可操作，避免泛泛而谈
-    - 弱点应与 weak_metrics 有明确的因果关联
-
-  expected_output: "Content analysis (content_weaknesses list and content_strengths list)"
-  agent: owned_note_auditor
-
-
 generate_audit_report:
   description: |
-    **任务目标**: 生成最终的自营笔记审计报告
+    **任务目标**: 生成客观的自营笔记审计报告
 
-    基于上游所有任务的结果，创建完整的 AuditReport。
+    基于上游任务的结果，创建完整的 AuditReport。
 
     **执行步骤**:
 
     1. 收集基础信息:
        - note_id: {note_id}
        - keyword: {keyword}
-       - current_metrics: 所有10个预测指标的值 (从 shared context)
 
     2. 收集分析结果:
        - text_features: TextAnalysisResult (from Task 1)
        - visual_features: VisionAnalysisResult (from Task 1)
-       - weak_metrics: List[str] (from Task 2)
-       - strong_metrics: List[str] (from Task 2)
-       - content_weaknesses: List[str] (from Task 3)
-       - content_strengths: List[str] (from Task 3)
 
-    3. 生成整体诊断 (overall_diagnosis):
-       - 简洁总结核心问题 (50-200个字符)
-       - 必须提及最关键的弱项指标和内容弱点
-       - 用中文表达，例如:
-         "CTR和sort_score2表现不佳,主要问题在于标题缺乏情感钩子,封面视觉吸引力不足,建议优化标题套路和封面设计。"
+    3. 生成客观特征摘要 (feature_summary):
+       - 长度: 50-300个字符
+       - 内容: 描述笔记的特征组合，包括:
+         * 标题特征 (title_pattern, title_emotion)
+         * 开头策略 (opening_strategy, opening_hook)
+         * 正文框架 (content_framework)
+         * 结尾技巧 (ending_technique)
+         * 视觉风格 (image_style, color_scheme, visual_tone)
+       - **关键要求**: 必须客观描述，不含任何"好坏强弱"的判断词
+       - 示例:
+         "该笔记采用疑问句标题配合情感词汇,开头使用对比钩子吸引注意,正文框架为问题解决型结构,
+          封面视觉风格简约清新,色彩方案以蓝白为主,整体呈现专业可信的调性。"
 
     4. 添加时间戳:
-       - audit_timestamp: 当前时间 (ISO 8601 格式, e.g., "2025-11-19T15:30:00Z")
+       - audit_timestamp: 当前时间 (ISO 8601 格式, e.g., "2025-11-20T15:30:00Z")
 
     5. 创建完整的 AuditReport JSON，确保符合以下schema:
        ```
-       {{
+       {
          "note_id": str,
          "keyword": str,
-         "current_metrics": dict (10个指标),
          "text_features": TextAnalysisResult,
          "visual_features": VisionAnalysisResult,
-         "weak_metrics": list,
-         "strong_metrics": list,
-         "content_weaknesses": list (不能为空),
-         "content_strengths": list,
-         "overall_diagnosis": str (50-200 chars),
+         "feature_summary": str (50-300 chars, 客观描述),
          "audit_timestamp": str
-       }}
+       }
        ```
 
     **验证要点**:
-    - content_weaknesses 不能为空
-    - overall_diagnosis 必须 50-200 字符
-    - current_metrics 必须包含全部10个指标
+    - feature_summary 必须 50-300 字符
+    - feature_summary 不能包含判断词: 好/坏/弱/差/优秀/不足/weak/bad/poor/strong/excellent
     - 所有嵌套对象 (text_features, visual_features) 必须完整
 
-  expected_output: "Complete AuditReport (JSON format conforming to AuditReport schema)"
+    **禁止事项**:
+    - ❌ 不要判断指标"强弱"（需要竞品数据对比）
+    - ❌ 不要识别"内容弱点"（需要竞品数据对比）
+    - ❌ 不要生成"优化建议"（那是 OptimizationStrategist 的职责）
+    - ✅ 只做客观的内容理解和特征提取
+
+    **输出格式要求（严格执行）**:
+    - ⚠️ 只输出 JSON，不要有任何额外文字或解释
+    - ⚠️ 不要使用 markdown 代码块 (```json)
+    - ⚠️ JSON 必须完整且格式正确，不能有语法错误
+    - ⚠️ 不要在最后一个字段后添加逗号 (trailing comma)
+    - ⚠️ 所有字符串必须正确转义（如引号、换行符）
+    - ✅ 直接输出符合 AuditReport schema 的单个 JSON 对象
+    - ✅ 使用标准 JSON 格式（RFC 8259），不使用 JSON5 或其他扩展
+
+  expected_output: "A single valid JSON object conforming to AuditReport schema (no additional text or markdown)"
   agent: owned_note_auditor
   output_file: "outputs/audit_report.json"
