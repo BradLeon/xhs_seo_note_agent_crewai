@@ -117,7 +117,13 @@ class NLPAnalysisTool(BaseTool):
             logger.info(f"Smart mode: Fetching metadata for note_id={note_id} from shared_context")
 
             from xhs_seo_optimizer.shared_context import shared_context
+            # Support both target_notes_data (CompetitorAnalyst) and owned_note_data (OwnedNoteAuditor)
             notes = shared_context.get("target_notes_data", [])
+            if not notes:
+                # Try owned_note_data (single note)
+                owned_note = shared_context.get("owned_note_data")
+                if owned_note:
+                    notes = [owned_note]
 
             # Find the note by note_id
             for note in notes:
