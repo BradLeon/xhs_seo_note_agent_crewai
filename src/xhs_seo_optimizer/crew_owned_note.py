@@ -13,6 +13,7 @@ from crewai import Agent, Crew, Task, Process, LLM
 from crewai.project import CrewBase, agent, crew, task, before_kickoff
 from typing import Dict, Any, Union
 import os
+import json
 
 from xhs_seo_optimizer.models.reports import AuditReport
 from xhs_seo_optimizer.models.note import Note
@@ -125,7 +126,9 @@ class XhsSeoOptimizerCrewOwnedNote:
             k: v for k, v in prediction_dict.items()
             if k != "note_id" and isinstance(v, (int, float))
         }
-        inputs["current_metrics"] = current_metrics
+        # Store as JSON string for YAML substitution to avoid Python dict repr with single quotes
+        # This ensures LLM sees proper JSON format (double quotes) and can copy it correctly
+        inputs["current_metrics"] = json.dumps(current_metrics, ensure_ascii=False)
         inputs["validated"] = True
 
         return inputs

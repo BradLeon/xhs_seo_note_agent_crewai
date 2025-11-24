@@ -49,7 +49,15 @@ generate_audit_report:
        - text_features: TextAnalysisResult (from Task 1)
        - visual_features: VisionAnalysisResult (from Task 1)
 
-    3. 生成客观特征摘要 (feature_summary):
+    3. 收集当前指标 (current_metrics):
+       - 直接使用以下 JSON 字符串（已格式化，直接复制即可）:
+         {current_metrics}
+       - 包括: ctr, comment_rate, like_rate, fav_rate, share_rate, follow_rate,
+               interaction_rate, ces_rate, impression, sort_score2
+       - 这些指标将用于GapFinder进行统计差距分析
+       - ⚠️ 重要: 上面的 JSON 已经是正确格式，直接解析并嵌入到输出中即可
+
+    4. 生成客观特征摘要 (feature_summary):
        - 长度: 50-300个字符
        - 内容: 描述笔记的特征组合，包括:
          * 标题特征 (title_pattern, title_emotion)
@@ -62,16 +70,17 @@ generate_audit_report:
          "该笔记采用疑问句标题配合情感词汇,开头使用对比钩子吸引注意,正文框架为问题解决型结构,
           封面视觉风格简约清新,色彩方案以蓝白为主,整体呈现专业可信的调性。"
 
-    4. 添加时间戳:
+    5. 添加时间戳:
        - audit_timestamp: 当前时间 (ISO 8601 格式, e.g., "2025-11-20T15:30:00Z")
 
-    5. 创建完整的 AuditReport JSON，确保符合以下schema:
+    6. 创建完整的 AuditReport JSON，确保符合以下schema:
        ```
        {
          "note_id": str,
          "keyword": str,
          "text_features": TextAnalysisResult,
          "visual_features": VisionAnalysisResult,
+         "current_metrics": Dict[str, float],
          "feature_summary": str (50-300 chars, 客观描述),
          "audit_timestamp": str
        }

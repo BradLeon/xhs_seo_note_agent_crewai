@@ -6,6 +6,7 @@ from .reports import (
     FeaturePattern,
     SuccessProfileReport,
     AuditReport,
+    MetricGap,
     GapReport,
     OptimizationPlan,
 )
@@ -25,6 +26,7 @@ __all__ = [
     "FeaturePattern",
     "SuccessProfileReport",
     "AuditReport",
+    "MetricGap",
     "GapReport",
     "OptimizationPlan",
 ]
