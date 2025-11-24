@@ -10,8 +10,8 @@ Pydantic models for agent-generated reports:
 - OptimizationPlan: OptimizationStrategist output (placeholder)
 """
 
-from typing import List, Dict
-from pydantic import BaseModel, Field, field_validator
+from typing import List, Dict, Any
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .analysis_results import AggregatedMetrics, TextAnalysisResult, VisionAnalysisResult
 
@@ -102,6 +102,17 @@ class FeaturePattern(BaseModel):
             raise ValueError(f"feature_type must be one of {allowed_types}, got '{v}'")
         return v
 
+    @model_validator(mode='before')
+    @classmethod
+    def convert_null_lists_to_empty(cls, data: Any) -> Any:
+        """Convert null/None values to empty lists for List[str] fields."""
+        if isinstance(data, dict):
+            list_fields = ['examples', 'key_elements']
+            for field in list_fields:
+                if field in data and data[field] is None:
+                    data[field] = []
+        return data
+
 
 class FeatureAnalysis(BaseModel):
     """单个特征对特定指标的分析结果 (Analysis of a single feature for a specific metric).
@@ -163,6 +174,17 @@ class FeatureAnalysis(BaseModel):
             raise ValueError(f"key_elements must contain 3-5 items, got {len(v)}")
         return v
 
+    @model_validator(mode='before')
+    @classmethod
+    def convert_null_lists_to_empty(cls, data: Any) -> Any:
+        """Convert null/None values to empty lists for List[str] fields."""
+        if isinstance(data, dict):
+            list_fields = ['examples', 'key_elements']
+            for field in list_fields:
+                if field in data and data[field] is None:
+                    data[field] = []
+        return data
+
 
 class MetricSuccessProfile(BaseModel):
     """单个预测指标的成功模式分析 (Success profile for a single prediction metric).
@@ -218,6 +240,15 @@ class MetricSuccessProfile(BaseModel):
         if len(v) <= 30:
             raise ValueError(f"metric_success_narrative must be >30 characters, got {len(v)}")
         return v
+
+    @model_validator(mode='before')
+    @classmethod
+    def convert_null_lists_to_empty(cls, data: Any) -> Any:
+        """Convert null/None values to empty lists for List[str] fields."""
+        if isinstance(data, dict):
+            if 'relevant_features' in data and data['relevant_features'] is None:
+                data['relevant_features'] = []
+        return data
 
 
 class SuccessProfileReport(BaseModel):
@@ -281,6 +312,17 @@ class SuccessProfileReport(BaseModel):
             raise ValueError(f"viral_formula_summary must be >50 characters, got {len(v)}")
         return v
 
+    @model_validator(mode='before')
+    @classmethod
+    def convert_null_lists_to_empty(cls, data: Any) -> Any:
+        """Convert null/None values to empty lists for List fields."""
+        if isinstance(data, dict):
+            list_fields = ['metric_profiles', 'key_success_factors']
+            for field in list_fields:
+                if field in data and data[field] is None:
+                    data[field] = []
+        return data
+
 
 # Placeholder models for future agents
 
@@ -316,6 +358,11 @@ class AuditReport(BaseModel):
         description="视觉特征分析结果 (Visual features from MultiModalVisionTool)"
     )
 
+    # Current prediction metrics (for GapFinder)
+    current_metrics: Dict[str, float] = Field(
+        description="当前笔记的预测指标 (Prediction metrics from owned_note, excluding note_id)"
+    )
+
     # Objective feature summary (no strength/weakness judgment)
     feature_summary: str = Field(
         description="客观特征摘要 (Objective description of feature combination, 50-300 chars, "
@@ -343,17 +390,208 @@ class AuditReport(BaseModel):
         return v
 
 
+class MetricGap(BaseModel):
+    """单个指标的差距分析 (Gap analysis for a single metric).
+
+    Final schema for GapReport output. Includes all statistical, attribution,
+    and narrative fields.
+    """
+
+    metric_name: str = Field(
+        description="指标名称 (e.g., 'ctr', 'comment_rate', 'sort_score2')"
+    )
+
+    # Statistical fields
+    owned_value: float = Field(
+        description="客户笔记的当前值 (Owned note's current value)"
+    )
+
+    target_mean: float = Field(
+        description="竞品笔记的平均值 (Target notes' mean value)"
+    )
+
+    target_std: float = Field(
+        description="竞品笔记的标准差 (Target notes' std dev)"
+    )
+
+    delta_absolute: float = Field(
+        description="绝对差距 (Absolute difference: owned - target)"
+    )
+
+    delta_pct: float = Field(
+        description="百分比差距 (Percentage difference: (owned - target) / target * 100)"
+    )
+
+    z_score: float = Field(
+        description="Z分数 (Z-score: (owned - target) / std)"
+    )
+
+    p_value: float = Field(
+        description="P值 (P-value from two-tailed test)",
+        ge=0.0,
+        le=1.0
+    )
+
+    significance: str = Field(
+        description="显著性水平: critical | very_significant | significant | marginal | none | undefined"
+    )
+
+    interpretation: str = Field(
+        description="人类可读的解释 (Human-readable interpretation of the gap)"
+    )
+
+    priority_rank: int = Field(
+        description="优先级排名 (1-based ranking, 1 is highest priority)",
+        gt=0
+    )
+
+    # Feature attribution (from attribution.py)
+    related_features: List[str] = Field(
+        description="影响该指标的相关特征 (Features that affect this metric, from attribution.py)"
+    )
+
+    rationale: str = Field(
+        description="特征归因理由 (Rationale explaining why these features affect the metric)"
+    )
+
+    # Feature mapping results
+    missing_features: List[str] = Field(
+        description="缺失的关键特征 (Features absent in owned_note but present in success profile)"
+    )
+
+    weak_features: List[str] = Field(
+        description="执行不足的特征 (Features present but poorly executed)"
+    )
+
+    # Narrative
+    gap_explanation: str = Field(
+        description="差距原因解释 (Why this gap exists, 2-3 sentences, 50-200 chars)",
+        min_length=10,
+        max_length=200
+    )
+
+    recommendation_summary: str = Field(
+        description="改进建议摘要 (What to improve, 1-2 sentences, 20-100 chars)",
+        min_length=20,
+        max_length=100
+    )
+
+    @field_validator('significance')
+    @classmethod
+    def validate_significance(cls, v: str) -> str:
+        """Validate significance is one of allowed values."""
+        allowed = {'critical', 'very_significant', 'significant', 'marginal', 'none', 'undefined'}
+        if v not in allowed:
+            raise ValueError(f"significance must be one of {allowed}, got '{v}'")
+        return v
+
+    @model_validator(mode='before')
+    @classmethod
+    def convert_null_lists_to_empty(cls, data: Any) -> Any:
+        """Convert null/None values to empty lists for List[str] fields."""
+        if isinstance(data, dict):
+            list_fields = ['related_features', 'missing_features', 'weak_features']
+            for field in list_fields:
+                if field in data and data[field] is None:
+                    data[field] = []
+        return data
+
+
 class GapReport(BaseModel):
     """差距分析报告 (Gap analysis report).
 
-    Placeholder for GapFinder agent output (to be implemented in future change).
+    Identifies statistically significant performance gaps between owned_note
+    and target_notes, prioritizes them, and maps them to actionable features.
+
+    Generated by GapFinder agent.
     """
 
-    keyword: str = Field(description="关键词")
-    owned_note_id: str = Field(description="自有笔记ID")
-    gap_timestamp: str = Field(description="分析时间戳")
+    keyword: str = Field(
+        description="目标关键词 (Target keyword)"
+    )
 
-    # Additional fields will be added when GapFinder is implemented
+    owned_note_id: str = Field(
+        description="自有笔记ID (Owned note ID)"
+    )
+
+    # Statistical gap analysis
+    significant_gaps: List[MetricGap] = Field(
+        description="显著性差距列表 (p < 0.05), ordered by priority_rank"
+    )
+
+    marginal_gaps: List[MetricGap] = Field(
+        description="边缘显著差距列表 (0.05 <= p < 0.10)"
+    )
+
+    non_significant_gaps: List[MetricGap] = Field(
+        description="非显著差距列表 (p >= 0.10)"
+    )
+
+    # Cross-metric insights
+    top_priority_metrics: List[str] = Field(
+        description="Top 3 metrics to focus on (by priority score)",
+        max_length=3
+    )
+
+    root_causes: List[str] = Field(
+        description="3-5 root causes across gaps (e.g., '标题缺乏情感钩子')",
+        min_length=3,
+        max_length=5
+    )
+
+    impact_summary: str = Field(
+        description="Overall narrative (50-500 chars)",
+        min_length=50,
+        max_length=500
+    )
+
+    # Metadata
+    sample_size: int = Field(
+        description="竞品笔记样本量 (Sample size from target_notes)",
+        gt=0
+    )
+
+    gap_timestamp: str = Field(
+        description="分析时间戳 (ISO 8601 format, e.g., '2025-11-21T10:30:00Z')"
+    )
+
+    @field_validator('top_priority_metrics')
+    @classmethod
+    def validate_top_priority_metrics_length(cls, v: List[str]) -> List[str]:
+        """Validate top_priority_metrics has at most 3 items."""
+        if len(v) > 3:
+            raise ValueError(f"top_priority_metrics can have at most 3 items, got {len(v)}")
+        return v
+
+    @field_validator('root_causes')
+    @classmethod
+    def validate_root_causes_length(cls, v: List[str]) -> List[str]:
+        """Validate root_causes has 3-5 items."""
+        if not (3 <= len(v) <= 5):
+            raise ValueError(f"root_causes must contain 3-5 items, got {len(v)}")
+        return v
+
+    @field_validator('impact_summary')
+    @classmethod
+    def validate_impact_summary_length(cls, v: str) -> str:
+        """Validate impact_summary is 50-500 characters."""
+        if not (50 <= len(v) <= 500):
+            raise ValueError(f"impact_summary must be 50-500 characters, got {len(v)}")
+        return v
+
+    @model_validator(mode='before')
+    @classmethod
+    def convert_null_lists_to_empty(cls, data: Any) -> Any:
+        """Convert null/None values to empty lists for List fields."""
+        if isinstance(data, dict):
+            list_fields = [
+                'significant_gaps', 'marginal_gaps', 'non_significant_gaps',
+                'top_priority_metrics', 'root_causes'
+            ]
+            for field in list_fields:
+                if field in data and data[field] is None:
+                    data[field] = []
+        return data
 
 
 class OptimizationPlan(BaseModel):
