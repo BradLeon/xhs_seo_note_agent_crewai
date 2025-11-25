@@ -1,0 +1,202 @@
+# Task configuration for OptimizationStrategist crew
+# Sequential tasks: text optimization -> visual prompts -> compile plan
+
+generate_text_optimizations:
+  description: >
+    基于动态生成的 optimization_context 生成**数据驱动**的文本内容优化方案。
+
+    ## 核心原则
+    **只优化需要优化的特征（见下方数据input中的*_features_to_optimize变量），不要过度优化。**
+
+    ## 任务目标
+    根据输入数据中的 *_features_to_optimize 变量，确定需要优化的文本区域：
+
+    1. **识别需要优化的区域**：
+       - 如果 title_features_to_optimize 非空 → 优化标题
+       - 如果 opening_features_to_optimize 非空 → 优化开头钩子
+       - 如果 body_features_to_optimize 非空 → 优化正文
+       - 如果 ending_features_to_optimize 非空 → 优化结尾CTA
+       - 如果 hashtags_features_to_optimize 非空 → 优化话题标签
+       - 如果某区域的变量为空，说明该区域无需优化
+
+    2. **优化方式**：
+       - 参考 current_* 变量了解当前特征
+       - 针对 *_features_to_optimize 中列出的弱点进行改进
+       - 优化后的内容应该提升 priority_metrics_list 中的指标
+
+    ## 输出格式
+    返回JSON对象，**只包含需要优化的部分**：
+    ```json
+    {
+      "title_alternatives": [...],      // 3个备选，仅当 title_features_to_optimize 非空时
+      "opening_hook": {...},            // 仅当 opening_features_to_optimize 非空时
+      "body_optimizations": [...],      // 仅当 body_features_to_optimize 非空时
+      "ending_cta": {...},              // 仅当 ending_features_to_optimize 非空时
+      "hashtags": {...},                // 仅当 hashtags_features_to_optimize 非空时
+      "optimization_summary": "..."     // 说明哪些部分需要/不需要优化及原因
+    }
+    ```
+
+    **IMPORTANT - 输出格式约束**：
+
+    每个优化项必须包含：
+    - original: string（从数据input的original_title或original_content中提取的原始文本）
+    - optimized: string（优化后的文本内容）
+    - rationale: string（优化理由，说明针对哪些弱特征进行了改进）
+    - targeted_metrics: list[string]（**必须从priority_metrics_list中选择**）
+    - targeted_weak_features: list[string]（从对应的*_features_to_optimize变量中选择）
+
+    **CRITICAL约束**：
+    1. **title_alternatives的original**：必须使用完整的original_title，不是keyword
+    2. **hashtags的original**：必须从original_content提取**完整的所有话题标签**（通常在内容末尾），不要遗漏任何标签
+    3. **hashtags格式**：original和optimized都是完整的string（如"#话题1[话题]# #话题2[话题]#"），不是list或dict
+    4. **targeted_metrics**：只能包含priority_metrics_list中的指标，不要预测其他指标
+
+    **数据input**：
+    - keyword (SEO目标关键词): {keyword}
+    - original_title (原始标题): {original_title}
+    - original_content (原始正文完整内容): {original_content}
+    - priority_metrics_list (需要提升的指标): {priority_metrics_list}
+    - title_features_to_optimize (标题需优化的特征): {title_features_to_optimize}
+    - opening_features_to_optimize (开头需优化的特征): {opening_features_to_optimize}
+    - body_features_to_optimize (正文需优化的特征): {body_features_to_optimize}
+    - ending_features_to_optimize (结尾需优化的特征): {ending_features_to_optimize}
+    - hashtags_features_to_optimize (话题标签需优化的特征): {hashtags_features_to_optimize}
+    - current_title_pattern (当前标题套路): {current_title_pattern}
+    - current_title_emotion (当前标题情感强度): {current_title_emotion}
+    - current_opening_hook (当前开头钩子类型): {current_opening_hook}
+    - current_ending_cta (当前结尾召唤行动类型): {current_ending_cta}
+    - current_content_framework (当前内容框架): {current_content_framework}
+
+  expected_output: >
+    JSON格式的数据驱动优化方案。只优化optimization_context中列出的特征，
+    不要过度优化。包含optimization_summary说明决策依据。
+  agent: optimization_strategist
+
+
+generate_visual_prompts:
+  description: >
+    基于 optimization_context 生成**数据驱动**的视觉优化方案。
+
+    ## 任务目标
+    根据数据input中的 need_visual_optimization 判断是否需要生成视觉优化方案：
+
+    **如果 need_visual_optimization = True**：
+    - visual_features_to_optimize 列出了需要优化的视觉特征
+    - 参考 current_* 变量了解当前视觉特征
+    - 生成以下AIGC prompts：
+      1. 封面图优化prompt（cover_prompt，VisualPrompt对象）
+      2. 内页图优化prompts（inner_image_prompts，0-3个VisualPrompt对象）
+      3. 通用视觉建议（general_visual_guidelines）
+    - skip_reason 如果没有优化需要，则设为 null
+
+    **如果 need_visual_optimization = False**：
+    - 视觉特征表现良好，无需优化
+    - 返回：
+      - cover_prompt: null
+      - inner_image_prompts: []
+      - general_visual_guidelines: ["当前封面图吸引力、配色方案、视觉风格等指标表现良好，建议保持现有方案"]
+      - skip_reason: "当前封面图吸引力、配色方案、视觉风格等视觉特征表现良好，无需优化"
+
+    ## 输出格式
+    返回JSON对象：
+    ```json
+    {
+      "cover_prompt": {...},              // need_visual_optimization=True时必填
+      "inner_image_prompts": [...],       // 可选，0-3个
+      "general_visual_guidelines": [...], // 必填
+      "visual_optimization_summary": "..." // 说明决策依据
+    }
+    ```
+
+    **IMPORTANT - VisualPrompt格式约束**：
+
+    每个VisualPrompt对象必须包含：
+    - image_type: string（必须是 "cover" 或 "inner_1", "inner_2" 等，不能是中文）
+    - prompt_text: string（AIGC提示词，**至少50字符**，详细描述画面内容、氛围、构图、光线等）
+    - style_reference: string（风格参考，至少10字符）
+    - key_elements: list[string]（关键元素列表，2-6个）
+    - color_scheme: string（色彩方案，**必须是string**，至少10字符）
+    - targeted_metrics: list[string]（从priority_metrics_list中选择）
+
+    **封面图格式示例**：
+    ```json
+    {
+      "image_type": "cover",
+      "prompt_text": "一位年轻妈妈温柔地看着宝宝，手中拿着DHA营养品。背景是温馨的家居环境，光线柔和。画面传递出母爱和健康成长的氛围。",
+      "style_reference": "小红书爆款育儿笔记风格，真实生活感",
+      "key_elements": ["年轻妈妈", "宝宝", "DHA产品", "温馨家居"],
+      "color_scheme": "暖色调，柔和的黄色和白色为主，绿色点缀代表健康",
+      "targeted_metrics": ["ctr", "sort_score2"]
+    }
+    ```
+
+    **数据input**：
+    - keyword (SEO目标关键词): {keyword}
+    - priority_metrics_list (需要提升的指标): {priority_metrics_list}
+    - need_visual_optimization (是否需要视觉优化): {need_visual_optimization}
+    - visual_features_to_optimize (视觉需优化的特征): {visual_features_to_optimize}
+    - current_thumbnail_appeal (当前封面图吸引力): {current_thumbnail_appeal}
+    - current_color_scheme (当前配色方案): {current_color_scheme}
+    - current_visual_tone (当前视觉风格): {current_visual_tone}
+
+  expected_output: >
+    JSON格式的数据驱动视觉优化方案。只优化optimization_context中的视觉特征，
+    包含visual_optimization_summary说明决策依据。
+  agent: optimization_strategist
+
+
+compile_optimization_plan:
+  description: >
+    汇总前两个任务的输出，生成完整的优化方案(OptimizationPlan)。
+
+    ## 任务目标
+    1. **整合优化结果**：
+       - 从 text_optimizations（前一个任务的输出）中提取文本优化内容
+       - 从 visual_prompts（前一个任务的输出）中提取视觉优化内容
+       - 如果某部分有优化内容 → 填入对应字段
+       - 如果某部分无需优化 → 填入占位结构或保留原内容
+
+    2. **生成优先执行建议(priority_summary)**：
+       - 基于 priority_metrics_list 中的指标
+       - 说明应该先执行哪些优化，为什么
+       - 如果某些部分无需优化，也要说明原因
+
+    3. **生成预期影响(expected_impact)** - CRITICAL约束：
+       - **ONLY预测 priority_metrics_list 中的指标**（共 {priority_metrics_count} 个）
+       - **这是完整列表，必须全部预测，不多不少**
+       - **NEVER预测不存在的指标**: save_count, read_completion, engagement_rate, comment_count, search_visibility
+       - 这些指标在prediction模型中未定义，预测它们是幻觉行为
+       - 格式：{{"metric1": "预期效果描述", "metric2": "预期效果描述", ...}}
+       - **验证清单**（输出前必须检查）：
+         1. expected_impact 的 keys 数量 = {priority_metrics_count}
+         2. expected_impact 的每个 key 都在 {priority_metrics_list} 中
+         3. {priority_metrics_list} 中的每个指标都在 expected_impact 中
+
+    ## 输出格式
+    返回完整的OptimizationPlan JSON对象：
+    - keyword: 关键词（从数据input获取）
+    - owned_note_id: 笔记ID（从数据input获取）
+    - title_optimization: 标题优化方案
+      - 如有优化：包含 alternatives(1-3个)、recommended_index、selection_rationale
+      - 如无需优化：alternatives 保留原标题，rationale 说明"当前标题已符合要求"
+    - content_optimization: 内容优化方案（各字段根据实际需求填充或留空）
+    - visual_optimization: 视觉优化方案
+      - 如无需优化：cover_prompt 为 null，general_visual_guidelines 说明原因
+    - priority_summary: 优先执行建议（包含需要/不需要优化的说明）
+    - expected_impact: 预期影响字典（只包含 priority_metrics_list 中的指标）
+    - plan_timestamp: ISO 8601 格式时间戳
+
+    **数据input**：
+    - text_optimizations (来自Task 1的输出，CrewAI自动传递): generate_text_optimizations任务的JSON输出
+    - visual_prompts (来自Task 2的输出，CrewAI自动传递): generate_visual_prompts任务的JSON输出
+    - keyword (SEO目标关键词): {keyword}
+    - note_id (笔记ID): {note_id}
+    - priority_metrics_list (需要预测的指标列表): {priority_metrics_list}
+    - priority_metrics_count (指标数量): {priority_metrics_count}
+    - original_title (用于无需优化时的占位): {original_title}
+
+  expected_output: >
+    完整的OptimizationPlan JSON对象，符合Pydantic模型定义。
+    保持完整结构，对无需优化的部分用占位值或说明。
+  agent: optimization_strategist
