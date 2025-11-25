@@ -274,6 +274,81 @@ METRIC_FEATURE_ATTRIBUTION: Dict[str, AttributionRule] = {
 }
 
 
+# ========================================
+# Feature -> Content Area Mapping
+# 显式定义每个feature属于哪个内容区域，避免在prompt中进行模式匹配
+# ========================================
+
+FEATURE_CONTENT_AREA: Dict[str, str] = {
+    # Title features → "title"
+    "title_pattern": "title",
+    "title_keywords": "title",
+    "title_emotion": "title",
+
+    # Opening features → "opening"
+    "opening_strategy": "opening",
+    "opening_hook": "opening",
+    "opening_impact": "opening",
+
+    # Body/content features → "body"
+    "content_framework": "body",
+    "content_logic": "body",
+    "pain_points": "body",
+    "pain_intensity": "body",
+    "value_propositions": "body",
+    "value_hierarchy": "body",
+    "emotional_triggers": "body",
+    "emotional_intensity": "body",
+    "benefit_appeals": "body",
+    "transformation_promise": "body",
+    "credibility_signals": "body",
+    "authority_indicators": "body",
+    "social_proof": "body",
+    "urgency_indicators": "body",
+    "scarcity_elements": "body",
+    "structure_completeness": "body",
+    "paragraph_structure": "body",
+    "readability_score": "body",
+    "word_count": "body",
+
+    # Ending features → "ending"
+    "ending_technique": "ending",
+    "ending_cta": "ending",
+    "ending_resonance": "ending",
+
+    # Hashtag/taxonomy features → "hashtags"
+    "intention_lv2": "hashtags",
+    "taxonomy2": "hashtags",
+
+    # Visual features → "visual"
+    "thumbnail_appeal": "visual",
+    "visual_tone": "visual",
+    "color_scheme": "visual",
+    "text_ocr_content_highlight": "visual",
+    "visual_storytelling": "visual",
+    "image_style": "visual",
+    "image_quality": "visual",
+    "image_content_relation": "visual",
+    "personal_style": "visual",
+    "realistic_and_emotional_tone": "visual",
+    "brand_consistency": "visual",
+    "visual_hierarchy": "visual",
+}
+
+
+def get_feature_content_area(feature: str) -> str:
+    """Get the content area for a specific feature.
+
+    Args:
+        feature: Feature name (e.g., 'title_emotion', 'opening_hook')
+
+    Returns:
+        Content area string: 'title', 'opening', 'body', 'ending', 'hashtags', or 'visual'
+        Returns 'unknown' if feature not found.
+    """
+    return FEATURE_CONTENT_AREA.get(feature, "unknown")
+
+
 def get_relevant_features(metric: str) -> List[str]:
     """Get relevant features for a specific metric.
 
@@ -318,3 +393,130 @@ def get_all_metrics() -> List[str]:
         List of metric names
     """
     return list(METRIC_FEATURE_ATTRIBUTION.keys())
+
+
+# ========================================
+# Inverted Index: Feature -> Metrics
+# ========================================
+
+def build_feature_metric_index() -> Dict[str, List[str]]:
+    """Build inverted index mapping each feature to the metrics it affects.
+
+    Returns:
+        Dict[feature_name, List[metric_names]]
+        Example: {"title_emotion": ["ctr", "interaction_rate", "share_rate"]}
+    """
+    inverted_index: Dict[str, List[str]] = {}
+
+    for metric, rule in METRIC_FEATURE_ATTRIBUTION.items():
+        for feature in rule["features"]:
+            if feature not in inverted_index:
+                inverted_index[feature] = []
+            if metric not in inverted_index[feature]:
+                inverted_index[feature].append(metric)
+
+    return inverted_index
+
+
+# Cached inverted index (built once at module load)
+_FEATURE_METRIC_INDEX: Dict[str, List[str]] = None
+
+
+def get_feature_metric_index() -> Dict[str, List[str]]:
+    """Get the cached feature-to-metric inverted index.
+
+    Returns:
+        Dict mapping feature names to list of metrics they affect
+    """
+    global _FEATURE_METRIC_INDEX
+    if _FEATURE_METRIC_INDEX is None:
+        _FEATURE_METRIC_INDEX = build_feature_metric_index()
+    return _FEATURE_METRIC_INDEX
+
+
+def get_metrics_affected_by_feature(feature: str) -> List[str]:
+    """Get all metrics that a specific feature affects.
+
+    Args:
+        feature: Feature name (e.g., 'title_emotion', 'thumbnail_appeal')
+
+    Returns:
+        List of metric names affected by this feature.
+        Returns empty list if feature not found.
+    """
+    index = get_feature_metric_index()
+    return index.get(feature, [])
+
+
+def get_all_features() -> List[str]:
+    """Get list of all unique features across all attribution rules.
+
+    Returns:
+        List of unique feature names
+    """
+    index = get_feature_metric_index()
+    return list(index.keys())
+
+
+def build_optimization_context(
+    priority_metrics: List[str],
+    weak_features: List[str],
+    missing_features: List[str]
+) -> Dict[str, any]:
+    """Build optimization context for LLM based on metrics and features.
+
+    This function creates a structured context that tells the LLM:
+    - Which features need optimization
+    - Why (which metrics they affect)
+    - The attribution rationale
+
+    Args:
+        priority_metrics: Metrics that need improvement (from GapReport)
+        weak_features: Features present but poorly executed
+        missing_features: Features completely absent
+
+    Returns:
+        Structured optimization context dict
+    """
+    context = {
+        "priority_metrics": [],
+        "features_to_optimize": {},
+        "features_by_content_area": {}
+    }
+
+    # Add priority metrics with their feature mappings
+    for metric in priority_metrics:
+        if metric in METRIC_FEATURE_ATTRIBUTION:
+            context["priority_metrics"].append({
+                "metric": metric,
+                "relevant_features": METRIC_FEATURE_ATTRIBUTION[metric]["features"],
+                "rationale": METRIC_FEATURE_ATTRIBUTION[metric]["rationale"]
+            })
+
+    # Collect all features that need optimization
+    all_problem_features = set(weak_features) | set(missing_features)
+
+    # Build features_to_optimize with their impact info
+    for feature in all_problem_features:
+        affected_metrics = get_metrics_affected_by_feature(feature)
+        # Filter to only priority metrics for relevance
+        priority_affected = [m for m in affected_metrics if m in priority_metrics]
+
+        context["features_to_optimize"][feature] = {
+            "status": "weak" if feature in weak_features else "missing",
+            "content_area": get_feature_content_area(feature),  # 显式指定内容区域
+            "affects_metrics": affected_metrics,
+            "priority_metrics_affected": priority_affected,
+            "optimization_action": "改进现有内容" if feature in weak_features else "新增内容元素"
+        }
+
+    # Also group features by content_area for easier prompt consumption
+    features_by_area: Dict[str, List[str]] = {}
+    for feature, info in context["features_to_optimize"].items():
+        area = info["content_area"]
+        if area not in features_by_area:
+            features_by_area[area] = []
+        features_by_area[area].append(feature)
+    context["features_by_content_area"] = features_by_area
+
+    return context

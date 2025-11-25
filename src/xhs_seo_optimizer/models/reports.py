@@ -10,7 +10,7 @@ Pydantic models for agent-generated reports:
 - OptimizationPlan: OptimizationStrategist output (placeholder)
 """
 
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .analysis_results import AggregatedMetrics, TextAnalysisResult, VisionAnalysisResult
@@ -594,14 +594,256 @@ class GapReport(BaseModel):
         return data
 
 
+class OptimizationItem(BaseModel):
+    """单个优化项 (Single optimization item).
+
+    Represents one specific content modification with rationale and targeting info.
+    """
+
+    original: str = Field(
+        description="原始内容 (Original content before optimization)"
+    )
+
+    optimized: str = Field(
+        description="优化后内容 (Optimized content, ready to use)"
+    )
+
+    rationale: str = Field(
+        description="优化理由 (Why this change improves performance, 50-200 chars)",
+        min_length=20,
+        max_length=300
+    )
+
+    targeted_metrics: List[str] = Field(
+        description="针对的指标 (Metrics this optimization targets, e.g., ['ctr', 'comment_rate'])"
+    )
+
+    targeted_weak_features: List[str] = Field(
+        description="针对的弱特征 (Weak features this optimization addresses)"
+    )
+
+    @field_validator('targeted_metrics')
+    @classmethod
+    def validate_targeted_metrics_not_empty(cls, v: List[str]) -> List[str]:
+        """Validate targeted_metrics is not empty."""
+        if len(v) == 0:
+            raise ValueError("targeted_metrics cannot be empty")
+        return v
+
+
+class TitleOptimization(BaseModel):
+    """标题优化方案 (Title optimization with alternatives).
+
+    Provides 1-3 alternative titles with one recommended choice.
+    If title doesn't need optimization, can include just 1 item with original title.
+    """
+
+    alternatives: List[OptimizationItem] = Field(
+        description="1-3个备选标题 (1-3 alternative titles; if no optimization needed, include 1 with original)"
+    )
+
+    recommended_index: int = Field(
+        description="推荐选择的索引 (Index of recommended title, 0-2)",
+        ge=0
+    )
+
+    selection_rationale: str = Field(
+        description="推荐理由或无需优化说明 (Why recommended, or why no optimization needed)",
+        min_length=10,
+        max_length=200
+    )
+
+    @field_validator('alternatives')
+    @classmethod
+    def validate_alternatives_count(cls, v: List[OptimizationItem]) -> List[OptimizationItem]:
+        """Validate 1-3 alternatives."""
+        if not (1 <= len(v) <= 3):
+            raise ValueError(f"alternatives must contain 1-3 items, got {len(v)}")
+        return v
+
+    @model_validator(mode='after')
+    def validate_recommended_index_in_range(self):
+        """Validate recommended_index is within alternatives range."""
+        if self.recommended_index >= len(self.alternatives):
+            raise ValueError(f"recommended_index ({self.recommended_index}) must be < len(alternatives) ({len(self.alternatives)})")
+        return self
+
+
+class ContentOptimization(BaseModel):
+    """内容优化方案 (Content optimization for text elements).
+
+    Includes opening hook, ending CTA, hashtags, and body improvement suggestions.
+    Fields are Optional - only include those that need optimization.
+    """
+
+    opening_hook: Optional[OptimizationItem] = Field(
+        default=None,
+        description="开头钩子优化 (Opening hook optimization, null if no optimization needed)"
+    )
+
+    ending_cta: Optional[OptimizationItem] = Field(
+        default=None,
+        description="结尾互动召唤优化 (Ending CTA optimization, null if no optimization needed)"
+    )
+
+    hashtags: Optional[OptimizationItem] = Field(
+        default=None,
+        description="话题标签优化 (Hashtag optimization, null if no optimization needed)"
+    )
+
+    body_improvements: List[str] = Field(
+        default_factory=list,
+        description="正文改进要点 (Key improvement points for body content, empty if none needed)"
+    )
+
+    skip_reason: Optional[str] = Field(
+        default=None,
+        description="跳过优化的原因 (Reason why certain optimizations were skipped)"
+    )
+
+
+class VisualPrompt(BaseModel):
+    """视觉优化 Prompt (Visual optimization prompt for AIGC).
+
+    Since no AIGC model is integrated, provides structured prompts for image generation.
+    """
+
+    image_type: str = Field(
+        description="图片类型 (cover | inner_1 | inner_2 | ...)"
+    )
+
+    prompt_text: str = Field(
+        description="AIGC 生成 prompt (Chinese, detailed description for image generation)",
+        min_length=50,
+        max_length=500
+    )
+
+    style_reference: str = Field(
+        description="参考风格描述 (Style reference, e.g., '小红书爆款育儿笔记风格')",
+        min_length=10,
+        max_length=100
+    )
+
+    key_elements: List[str] = Field(
+        description="必须包含的元素 (Elements that must be in the image)",
+        min_length=2,
+        max_length=6
+    )
+
+    color_scheme: str = Field(
+        description="推荐色彩方案 (Recommended color scheme, e.g., '暖色调，柔和黄色和白色为主')",
+        min_length=10,
+        max_length=100
+    )
+
+    targeted_metrics: List[str] = Field(
+        description="针对的指标 (Metrics this visual targets)"
+    )
+
+    @field_validator('image_type')
+    @classmethod
+    def validate_image_type(cls, v: str) -> str:
+        """Validate image_type format."""
+        if not v.startswith('inner_') and v != 'cover':
+            raise ValueError(f"image_type must be 'cover' or 'inner_N', got '{v}'")
+        return v
+
+    @field_validator('key_elements')
+    @classmethod
+    def validate_key_elements_length(cls, v: List[str]) -> List[str]:
+        """Validate key_elements has 2-6 items."""
+        if not (2 <= len(v) <= 6):
+            raise ValueError(f"key_elements must contain 2-6 items, got {len(v)}")
+        return v
+
+
+class VisualOptimization(BaseModel):
+    """视觉优化方案 (Visual optimization with prompts).
+
+    Provides AIGC prompts for cover and inner images.
+    Fields are Optional - only include those that need optimization.
+    """
+
+    cover_prompt: Optional[VisualPrompt] = Field(
+        default=None,
+        description="封面图优化 prompt (Cover image generation prompt, null if no optimization needed)"
+    )
+
+    inner_image_prompts: List[VisualPrompt] = Field(
+        default_factory=list,
+        description="内页图优化 prompts (Inner image generation prompts, empty if none needed)"
+    )
+
+    general_visual_guidelines: List[str] = Field(
+        default_factory=list,
+        description="通用视觉指南 (General visual improvement guidelines, can be empty)"
+    )
+
+    skip_reason: Optional[str] = Field(
+        default=None,
+        description="跳过视觉优化的原因 (Reason why visual optimization was skipped)"
+    )
+
+
 class OptimizationPlan(BaseModel):
     """优化策略方案 (Optimization strategy plan).
 
-    Placeholder for OptimizationStrategist agent output (to be implemented in future change).
+    Complete optimization plan generated by OptimizationStrategist agent.
+    Transforms GapReport insights into actionable content modifications.
+
+    Includes:
+    - Title optimization (3 alternatives)
+    - Content optimization (opening, ending, hashtags)
+    - Visual optimization (AIGC prompts for images)
+    - Priority summary and expected impact
     """
 
-    keyword: str = Field(description="关键词")
-    owned_note_id: str = Field(description="自有笔记ID")
-    plan_timestamp: str = Field(description="生成时间戳")
+    keyword: str = Field(description="关键词 (Target keyword)")
 
-    # Additional fields will be added when OptimizationStrategist is implemented
+    owned_note_id: str = Field(description="自有笔记ID (Owned note ID)")
+
+    # Core optimization content
+    title_optimization: TitleOptimization = Field(
+        description="标题优化方案 (Title optimization with 3 alternatives)"
+    )
+
+    content_optimization: ContentOptimization = Field(
+        description="内容优化方案 (Content optimization for text elements)"
+    )
+
+    visual_optimization: VisualOptimization = Field(
+        description="视觉优化方案 (Visual optimization with AIGC prompts)"
+    )
+
+    # Summary and impact
+    priority_summary: str = Field(
+        description="优先执行建议 (Which optimizations to prioritize, 50-200 chars)",
+        min_length=50,
+        max_length=300
+    )
+
+    expected_impact: Dict[str, str] = Field(
+        description="预期影响 (Expected impact per metric, e.g., {'ctr': '预计提升10-15%', 'comment_rate': '预计提升20-30%'})"
+    )
+
+    # Metadata
+    plan_timestamp: str = Field(
+        description="生成时间戳 (ISO 8601 format, e.g., '2025-11-24T10:30:00Z')"
+    )
+
+    @field_validator('expected_impact')
+    @classmethod
+    def validate_expected_impact_not_empty(cls, v: Dict[str, str]) -> Dict[str, str]:
+        """Validate expected_impact has at least one entry."""
+        if len(v) == 0:
+            raise ValueError("expected_impact cannot be empty")
+        return v
+
+    @model_validator(mode='before')
+    @classmethod
+    def convert_null_to_defaults(cls, data: Any) -> Any:
+        """Convert null/None values to appropriate defaults."""
+        if isinstance(data, dict):
+            if 'expected_impact' in data and data['expected_impact'] is None:
+                data['expected_impact'] = {}
+        return data
