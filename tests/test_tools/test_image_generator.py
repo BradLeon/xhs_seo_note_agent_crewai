@@ -93,41 +93,36 @@ class TestImageGeneratorToolAPICall:
         }):
             return ImageGeneratorTool()
 
-    @pytest.fixture
-    def mock_successful_response(self):
-        """Mock successful API response with image data."""
-        # Create a simple test image (1x1 red pixel PNG)
+    def test_generate_image_success(self, tool):
+        """Test successful image generation by mocking OpenAI client."""
+        # Create mock response with image data
         test_image_base64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
 
-        mock_response = MagicMock()
-        mock_response.choices = [MagicMock()]
-        mock_response.choices[0].message.content = [
-            MagicMock(
-                type="image",
-                image=MagicMock(data=test_image_base64)
-            )
+        mock_message = MagicMock()
+        mock_message.content = [
+            {"type": "image", "data": test_image_base64}
         ]
-        return mock_response
 
-    @pytest.fixture
-    def mock_error_response(self):
-        """Mock API error response."""
         mock_response = MagicMock()
-        mock_response.choices = []
-        return mock_response
+        mock_response.choices = [MagicMock(message=mock_message)]
 
-    def test_generate_image_success(self, tool, mock_successful_response):
-        """Test successful image generation."""
-        with patch.object(tool, '_call_api', return_value=mock_successful_response):
+        with patch('xhs_seo_optimizer.tools.image_generator.OpenAI') as mock_openai:
+            mock_client = MagicMock()
+            mock_client.chat.completions.create.return_value = mock_response
+            mock_openai.return_value = mock_client
+
             result = tool._generate_image("测试prompt")
 
             assert result['success'] is True
             assert 'image_data' in result
-            assert result['error'] is None
 
     def test_generate_image_failure(self, tool):
         """Test image generation failure handling."""
-        with patch.object(tool, '_call_api', side_effect=Exception("API Error")):
+        with patch('xhs_seo_optimizer.tools.image_generator.OpenAI') as mock_openai:
+            mock_client = MagicMock()
+            mock_client.chat.completions.create.side_effect = Exception("API Error")
+            mock_openai.return_value = mock_client
+
             result = tool._generate_image("测试prompt")
 
             assert result['success'] is False

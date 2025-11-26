@@ -664,10 +664,9 @@ class OptimizationItem(BaseModel):
     @field_validator('targeted_metrics')
     @classmethod
     def validate_targeted_metrics_not_empty(cls, v: List[str]) -> List[str]:
-        """Validate targeted_metrics is not empty."""
-        if len(v) == 0:
-            raise ValueError("targeted_metrics cannot be empty")
-        return v
+        """Validate targeted_metrics - allow empty for cases like hashtag optimization."""
+        # Allow empty list - some optimizations (like hashtags) may not target specific metrics
+        return v if v is not None else []
 
 
 class TitleOptimization(BaseModel):

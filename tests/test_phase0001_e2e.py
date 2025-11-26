@@ -167,7 +167,7 @@ class TestVisualSubjectsExtraction:
 
         subjects = VisualSubjects(
             subject_type="product",
-            subject_description="产品图",
+            subject_description="产品展示图片",  # min_length=5
             brand_elements=[],
             must_preserve=[],
             original_cover_url=meta['cover_image_url'],
@@ -233,7 +233,7 @@ class TestMarketingSentimentIntegration:
         result = tool._rule_based_detection(content)
 
         # Soft-ad content may have some marketing patterns
-        assert 'rule_score' in result
+        assert 'score' in result  # actual field name is 'score' not 'rule_score'
         assert 'issues' in result
 
 
@@ -279,8 +279,8 @@ class TestOptimizationStrategistPhase0001:
         crew = XhsSeoOptimizerCrewOptimization()
         assert crew is not None
 
-        # Check new agent exists
-        assert hasattr(crew, 'image_generator_agent')
+        # Check new agent exists (method name matches YAML key: image_generator)
+        assert hasattr(crew, 'image_generator')
 
     def test_crew_has_new_tasks(self):
         """Test that OptimizationStrategist crew has new tasks."""

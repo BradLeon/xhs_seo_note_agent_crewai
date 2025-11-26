@@ -73,7 +73,7 @@ class XhsSeoOptimizerCrewOptimization:
         )
 
     @agent
-    def image_generator_agent(self) -> Agent:
+    def image_generator(self) -> Agent:
         """图像生成 agent (Phase 0001).
 
         Specialized agent for image generation using AIGC tools.
@@ -139,7 +139,7 @@ class XhsSeoOptimizerCrewOptimization:
         """
         return Task(
             config=self.tasks_config['generate_images'],
-            agent=self.image_generator_agent(),
+            agent=self.image_generator(),
             context=[
                 self.generate_visual_prompts(),
                 self.compile_optimization_plan()
@@ -265,6 +265,7 @@ class XhsSeoOptimizerCrewOptimization:
 
         # Extract key fields for YAML variable substitution
         inputs['note_id'] = gap_report.get('owned_note_id', owned_note.get('note_id'))
+        inputs['original_note_id'] = inputs['note_id']  # Alias for task YAML template
         inputs['original_title'] = owned_note.get('title', '')
         inputs['original_content'] = owned_note.get('content', '')
 
@@ -509,12 +510,20 @@ class XhsSeoOptimizerCrewOptimization:
             priority_metrics: List of priority metrics that should be predicted
 
         Returns:
-            Modified result with validated expected_impact
+            Modified result with validated expected_impact (if applicable)
         """
         if not hasattr(result, 'pydantic') or not result.pydantic:
             return result
 
-        plan = result.pydantic
+        pydantic_obj = result.pydantic
+
+        # Phase 0001: 最终输出是 OptimizedNote，没有 expected_impact
+        # 只有中间输出 OptimizationPlan 才有 expected_impact
+        if not hasattr(pydantic_obj, 'expected_impact'):
+            print(f"\n🔍 DEBUG: 输出类型为 {type(pydantic_obj).__name__}，跳过 expected_impact 验证")
+            return result
+
+        plan = pydantic_obj
 
         # 1. 验证expected_impact只包含priority_metrics
         if plan.expected_impact:
@@ -536,31 +545,34 @@ class XhsSeoOptimizerCrewOptimization:
                     plan.expected_impact[metric] = f"优化方案针对{metric}的预期效果待评估"
                     print(f"   已添加占位符: {metric}")
 
-        # 2. 验证visual optimization逻辑一致性
-        has_cover_prompt = plan.visual_optimization and plan.visual_optimization.cover_prompt is not None
+        # 2. 验证visual optimization逻辑一致性 (只对 OptimizationPlan)
+        if hasattr(plan, 'visual_optimization'):
+            has_cover_prompt = plan.visual_optimization and plan.visual_optimization.cover_prompt is not None
 
-        # 从shared_context获取optimization_context
-        from xhs_seo_optimizer.shared_context import shared_context
-        optimization_context = shared_context.get('optimization_context', {})
-        has_visual_features = 'visual' in optimization_context.get('features_by_content_area', {})
+            # 从shared_context获取optimization_context
+            from xhs_seo_optimizer.shared_context import shared_context
+            optimization_context = shared_context.get('optimization_context', {})
+            has_visual_features = 'visual' in optimization_context.get('features_by_content_area', {})
 
-        if has_visual_features and not has_cover_prompt:
-            print(f"\n⚠️  WARNING: 需要优化visual特征但LLM未生成cover_prompt")
-            visual_features = optimization_context['features_by_content_area']['visual']
-            print(f"   Visual features: {visual_features}")
-        elif not has_visual_features and has_cover_prompt:
-            print(f"\n⚠️  WARNING: 不需要优化visual但LLM生成了cover_prompt（可能是误判）")
+            if has_visual_features and not has_cover_prompt:
+                print(f"\n⚠️  WARNING: 需要优化visual特征但LLM未生成cover_prompt")
+                visual_features = optimization_context['features_by_content_area']['visual']
+                print(f"   Visual features: {visual_features}")
+            elif not has_visual_features and has_cover_prompt:
+                print(f"\n⚠️  WARNING: 不需要优化visual但LLM生成了cover_prompt（可能是误判）")
 
         return result
 
     def _save_optimization_plan(self, result: Any):
-        """Save OptimizationPlan to outputs/optimization_plan.json.
+        """Save crew output to outputs directory.
+
+        Phase 0001: Output is OptimizedNote (saved to optimized_note.json)
+        Legacy: Output was OptimizationPlan (saved to optimization_plan.json)
 
         Args:
             result: CrewOutput from crew execution
         """
         os.makedirs("outputs", exist_ok=True)
-        output_path = "outputs/optimization_plan.json"
 
         # 验证并修正输出
         from xhs_seo_optimizer.shared_context import shared_context
@@ -575,6 +587,18 @@ class XhsSeoOptimizerCrewOptimization:
             result = self._validate_and_fix_output(result, priority_metrics)
         else:
             print("\n⚠️  WARNING: 无法获取priority_metrics，跳过验证")
+
+        # Determine output type and filename
+        output_type = "unknown"
+        if hasattr(result, 'pydantic') and result.pydantic:
+            output_type = type(result.pydantic).__name__
+
+        # Phase 0001: OptimizedNote -> optimized_note.json
+        # Legacy: OptimizationPlan -> optimization_plan.json
+        if output_type == "OptimizedNote":
+            output_path = "outputs/optimized_note.json"
+        else:
+            output_path = "outputs/optimization_plan.json"
 
         # Get JSON from result (try multiple formats for robustness)
         if hasattr(result, 'pydantic') and result.pydantic:
@@ -594,4 +618,4 @@ class XhsSeoOptimizerCrewOptimization:
         with open(output_path, 'w', encoding='utf-8') as f:
             f.write(report_json)
 
-        print(f"✓ OptimizationPlan saved to {output_path}")
+        print(f"✓ {output_type} saved to {output_path}")

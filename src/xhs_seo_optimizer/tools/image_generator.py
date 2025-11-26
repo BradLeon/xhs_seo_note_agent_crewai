@@ -72,7 +72,7 @@ class ImageGeneratorTool(BaseTool):
     model: str = Field(
         default_factory=lambda: os.getenv(
             "OPENROUTER_IMAGE_MODEL",
-            "google/gemini-2.0-flash-exp:free"  # Free tier for image generation
+            "google/gemini-2.5-flash-image"  # Free tier for image generation
         )
     )
 
@@ -129,9 +129,14 @@ class ImageGeneratorTool(BaseTool):
                     image_type=image_type
                 )
                 result["local_path"] = local_path
+                # IMPORTANT: Remove base64 data to avoid context overflow
+                # Set image_url to the local path (can be used directly in OptimizedNote)
+                del result["image_data"]
+                # Use local path as the image_url for downstream use
+                result["image_url"] = local_path
 
             result["image_type"] = image_type
-            result["prompt_used"] = full_prompt
+            result["prompt_used"] = full_prompt[:200] + "..." if len(full_prompt) > 200 else full_prompt
             result["reference_image_used"] = reference_image_url
 
             return json.dumps(result, ensure_ascii=False, indent=2)

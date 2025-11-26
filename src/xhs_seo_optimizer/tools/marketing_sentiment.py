@@ -55,7 +55,7 @@ class MarketingSentimentTool(BaseTool):
     model: str = Field(
         default_factory=lambda: os.getenv(
             "OPENROUTER_TEXT_MODEL",
-            "deepseek/deepseek-chat-v3.1"
+            "deepseek/deepseek-chat"
         )
     )
 

@@ -417,14 +417,18 @@ compile_optimized_note:
        - 将各部分整合为完整正文
        - 如无优化，使用 original_content
 
-    3. **确定最终图片**：
-       - 检查 generated_images.cover_image.success
-         * 如果成功：使用 generated_images.cover_image.image_url
+    3. **确定最终图片**（重要：优先使用生成的图片）：
+       - **封面图**：
+         * 检查 generated_images 任务输出中 cover_image 的结果
+         * 如果 cover_image.success = true：**必须使用** cover_image.local_path 或 cover_image.image_url
          * 如果失败或未生成：使用 original_cover_url
-       - 检查 generated_images.inner_images
-         * 成功的使用生成的 URL
-         * 失败的使用 original_inner_urls 中对应的 URL
-       - 记录 cover_image_source 和 inner_images_source
+         * 设置 cover_image_source = "generated" 或 "original"
+       - **内页图**：
+         * 检查 generated_images 任务输出中 inner_images 数组
+         * **只收集** success = true 的图片的 local_path 或 image_url
+         * 不要混入 original_inner_urls 中的原图（除非全部生成失败）
+         * 设置 inner_images_source = "generated"（全部新生成）/ "original"（全部原图）/ "mixed"（混合）
+       - **注意**：local_path 格式如 "outputs/images/cover_xxx.png"，直接使用，不要添加任何前缀
 
     4. **构建 ContentIntent 对象**：
        - 使用输入的 content_intent_* 变量构建

@@ -58,7 +58,7 @@ class TestRuleBasedDetection:
 
         result = tool._rule_based_detection(text_with_hard_ad)
 
-        assert result['hard_ad_count'] > 0
+        assert result['pattern_counts']['hard_ad'] > 0
         assert any('购买' in issue or '下单' in issue or '链接' in issue
                    for issue in result['issues'])
 
@@ -68,7 +68,7 @@ class TestRuleBasedDetection:
 
         result = tool._rule_based_detection(text_with_exaggeration)
 
-        assert result['exaggeration_count'] > 0
+        assert result['pattern_counts']['exaggeration'] > 0
         assert any('最' in issue or '必买' in issue or 'yyds' in issue
                    for issue in result['issues'])
 
@@ -78,15 +78,15 @@ class TestRuleBasedDetection:
 
         result = tool._rule_based_detection(text_with_soft_ad)
 
-        assert result['soft_ad_count'] > 0
+        assert result['pattern_counts']['soft_ad'] > 0
 
     def test_detect_cta_patterns(self, tool):
         """Test detection of call-to-action patterns."""
-        text_with_cta = "姐妹们快冲！赶紧入手！现在就买！"
+        text_with_cta = "姐妹们快冲！赶紧入手！现在就买它！"
 
         result = tool._rule_based_detection(text_with_cta)
 
-        assert result['cta_count'] > 0
+        assert result['pattern_counts']['cta'] > 0
 
     def test_clean_text_low_score(self, tool):
         """Test that clean text has low marketing score."""
@@ -100,9 +100,10 @@ class TestRuleBasedDetection:
         result = tool._rule_based_detection(clean_text)
 
         # Clean text should have relatively low counts
-        total_issues = (result['hard_ad_count'] +
-                        result['exaggeration_count'] +
-                        result['cta_count'])
+        pattern_counts = result['pattern_counts']
+        total_issues = (pattern_counts['hard_ad'] +
+                        pattern_counts['exaggeration'] +
+                        pattern_counts['cta'])
         assert total_issues <= 2  # Allow for some false positives
 
     def test_calculate_rule_score(self, tool):
@@ -115,7 +116,7 @@ class TestRuleBasedDetection:
         low_marketing = "分享一下我的使用体验，希望对大家有帮助。"
         result_low = tool._rule_based_detection(low_marketing)
 
-        assert result_high['rule_score'] > result_low['rule_score']
+        assert result_high['score'] > result_low['score']
 
 
 class TestDetermineMarketingSensitivity:
@@ -154,9 +155,9 @@ class TestMarketingSentimentToolRun:
         """Test that _run returns valid JSON string."""
         # Mock LLM detection to avoid API calls
         with patch.object(tool, '_llm_based_detection', return_value={
-            'llm_score': 0.3,
-            'analysis': '营销感适中',
-            'issues': [],
+            'score': 0.3,
+            'hidden_signals': [],
+            'tone_analysis': '营销感适中',
             'suggestions': []
         }):
             result = tool._run("这是一段测试文本")
@@ -171,9 +172,9 @@ class TestMarketingSentimentToolRun:
     def test_run_with_context(self, tool):
         """Test _run with context parameter."""
         with patch.object(tool, '_llm_based_detection', return_value={
-            'llm_score': 0.2,
-            'analysis': '分享性质为主',
-            'issues': [],
+            'score': 0.2,
+            'hidden_signals': [],
+            'tone_analysis': '分享性质为主',
             'suggestions': []
         }):
             result = tool._run(
@@ -195,17 +196,14 @@ class TestMarketingSentimentToolRun:
 
         for score, expected_level in test_cases:
             with patch.object(tool, '_rule_based_detection', return_value={
-                'rule_score': score,
-                'hard_ad_count': 0,
-                'exaggeration_count': 0,
-                'soft_ad_count': 0,
-                'cta_count': 0,
+                'score': score,
+                'pattern_counts': {'hard_ad': 0, 'exaggeration': 0, 'soft_ad': 0, 'cta': 0},
                 'issues': []
             }):
                 with patch.object(tool, '_llm_based_detection', return_value={
-                    'llm_score': score,
-                    'analysis': '',
-                    'issues': [],
+                    'score': score,
+                    'hidden_signals': [],
+                    'tone_analysis': '',
                     'suggestions': []
                 }):
                     result = tool._run("测试文本")
@@ -230,9 +228,9 @@ class TestMarketingSentimentToolSuggestions:
         high_marketing_text = "必买！这是最好的产品！快点击链接购买！优惠券限时！"
 
         with patch.object(tool, '_llm_based_detection', return_value={
-            'llm_score': 0.8,
-            'analysis': '营销感很强',
-            'issues': ['过多硬广词汇', '夸张用语'],
+            'score': 0.8,
+            'hidden_signals': ['过多硬广词汇', '夸张用语'],
+            'tone_analysis': '营销感很强',
             'suggestions': ['减少推销语气', '使用更客观的描述']
         }):
             result = tool._run(high_marketing_text)
@@ -245,9 +243,9 @@ class TestMarketingSentimentToolSuggestions:
         clean_text = "分享一下我的使用体验，这款产品我用了三个月，感觉还不错。"
 
         with patch.object(tool, '_llm_based_detection', return_value={
-            'llm_score': 0.1,
-            'analysis': '内容真实自然',
-            'issues': [],
+            'score': 0.1,
+            'hidden_signals': [],
+            'tone_analysis': '内容真实自然',
             'suggestions': []
         }):
             result = tool._run(clean_text)

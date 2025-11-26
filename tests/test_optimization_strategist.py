@@ -37,16 +37,17 @@ class TestOptimizationModels:
         assert "救命" in item.optimized
         assert len(item.targeted_metrics) == 2
 
-    def test_optimization_item_empty_metrics_fails(self):
-        """Test OptimizationItem fails with empty targeted_metrics."""
-        with pytest.raises(ValueError, match="targeted_metrics cannot be empty"):
-            OptimizationItem(
-                original="原标题",
-                optimized="新标题",
-                rationale="这是一个足够长的优化理由，说明为什么要做这个改变。",
-                targeted_metrics=[],  # Empty - should fail
-                targeted_weak_features=["feature1"]
-            )
+    def test_optimization_item_empty_metrics_allowed(self):
+        """Test OptimizationItem allows empty targeted_metrics (e.g., for hashtag optimization)."""
+        # Empty targeted_metrics is now allowed for general optimizations like hashtags
+        item = OptimizationItem(
+            original="原标题",
+            optimized="新标题",
+            rationale="这是一个足够长的优化理由，说明为什么要做这个改变。",
+            targeted_metrics=[],  # Empty - now allowed
+            targeted_weak_features=["feature1"]
+        )
+        assert item.targeted_metrics == []
 
     def test_title_optimization_valid(self):
         """Test TitleOptimization with valid 3 alternatives."""
@@ -440,31 +441,26 @@ class TestOptimizationStrategistE2E:
         # Validate result exists
         assert result is not None
 
-        # Check if result has pydantic attribute (OptimizationPlan)
+        # Check if result has pydantic attribute (OptimizedNote - Phase 0001)
         if hasattr(result, 'pydantic') and result.pydantic:
-            plan = result.pydantic
+            optimized_note = result.pydantic
 
-            # Validate OptimizationPlan structure
-            assert plan.keyword == keyword_data
-            assert plan.owned_note_id is not None
-            assert plan.title_optimization is not None
-            assert plan.content_optimization is not None
-            assert plan.visual_optimization is not None
-            assert plan.priority_summary is not None
-            assert plan.expected_impact is not None
+            # Validate OptimizedNote structure (Phase 0001 final output)
+            assert optimized_note.keyword == keyword_data
+            assert optimized_note.note_id is not None
+            assert optimized_note.original_note_id is not None
+            assert optimized_note.title is not None
+            assert optimized_note.content is not None
+            assert optimized_note.cover_image_url is not None
+            assert optimized_note.content_intent is not None
+            assert optimized_note.optimization_summary is not None
 
-            # Validate title_optimization has 1-3 alternatives
-            assert 1 <= len(plan.title_optimization.alternatives) <= 3
+            # Validate cover_image_source and inner_images_source
+            assert optimized_note.cover_image_source in ["generated", "original"]
+            assert optimized_note.inner_images_source in ["generated", "original", "mixed"]
 
-            # Validate each alternative has required fields
-            for alt in plan.title_optimization.alternatives:
-                assert alt.original is not None
-                assert alt.optimized is not None
-                assert alt.rationale is not None
-                assert len(alt.targeted_metrics) > 0
-
-        # Check output file was created
-        output_path = "outputs/optimization_plan.json"
+        # Check output file was created (Phase 0001: optimized_note.json)
+        output_path = "outputs/optimized_note.json"
         assert os.path.exists(output_path), f"Output file not created: {output_path}"
 
         # Validate output file is valid JSON
