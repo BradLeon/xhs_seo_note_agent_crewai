@@ -1,16 +1,33 @@
 """Optimization Strategist Crew - 优化策略师.
 
 Transforms GapReport insights into actionable content optimization plans,
-including title alternatives, content rewrites, and visual prompts.
+including title alternatives, content rewrites, visual prompts, and image generation.
+
+Phase 0001 updates:
+- Content intent constraint injection for consistency
+- Visual subjects constraint for image generation
+- Marketing sensitivity control for soft-ad notes
+- Actual image generation via ImageGeneratorTool
+- Final OptimizedNote output in Note format
 """
 
 from crewai import Agent, Crew, Task, LLM
 from crewai.project import CrewBase, agent, task, crew, before_kickoff
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 import json
 import os
+from datetime import datetime
 
-from .models.reports import OptimizationPlan
+from .models.reports import (
+    OptimizationPlan,
+    OptimizedNote,
+    GeneratedImages,
+    GeneratedImage,
+    ContentIntent,
+    VisualSubjects,
+    MarketingCheck
+)
+from .tools import ImageGeneratorTool, MarketingSentimentTool
 
 
 @CrewBase
@@ -49,7 +66,22 @@ class XhsSeoOptimizerCrewOptimization:
         """
         return Agent(
             config=self.agents_config['optimization_strategist'],
-            tools=[],  # No tools needed - pure LLM reasoning and generation
+            tools=[MarketingSentimentTool()],  # Phase 0001: Add marketing check tool
+            verbose=True,
+            llm=self.custom_llm,
+            allow_delegation=False
+        )
+
+    @agent
+    def image_generator(self) -> Agent:
+        """图像生成 agent (Phase 0001).
+
+        Specialized agent for image generation using AIGC tools.
+        Uses ImageGeneratorTool to generate images based on visual prompts.
+        """
+        return Agent(
+            config=self.agents_config['image_generator'],
+            tools=[ImageGeneratorTool()],
             verbose=True,
             llm=self.custom_llm,
             allow_delegation=False
@@ -96,6 +128,44 @@ class XhsSeoOptimizerCrewOptimization:
             output_pydantic=OptimizationPlan  # Final output validation
         )
 
+    @task
+    def generate_images(self) -> Task:
+        """Task 4: Generate actual images using AIGC (Phase 0001).
+
+        Calls ImageGeneratorTool to generate images based on visual prompts.
+        Uses original images as reference for style/subject consistency.
+
+        Output: GeneratedImages with cover and inner image results.
+        """
+        return Task(
+            config=self.tasks_config['generate_images'],
+            agent=self.image_generator(),
+            context=[
+                self.generate_visual_prompts(),
+                self.compile_optimization_plan()
+            ]
+        )
+
+    @task
+    def compile_optimized_note(self) -> Task:
+        """Task 5: Compile final OptimizedNote in Note format (Phase 0001).
+
+        Integrates all optimization results into a publishable Note format.
+        Includes marketing check if original note was soft-ad.
+
+        Output: OptimizedNote (can be directly published).
+        """
+        return Task(
+            config=self.tasks_config['compile_optimized_note'],
+            agent=self.optimization_strategist(),
+            context=[
+                self.compile_optimization_plan(),
+                self.generate_images()
+            ],
+            output_pydantic=OptimizedNote,
+            output_file="outputs/optimized_note.json"
+        )
+
     def _flatten_text_features(self, text_features: Dict) -> Dict[str, str]:
         """Extract and flatten text features for YAML variable substitution."""
         return {
@@ -116,7 +186,15 @@ class XhsSeoOptimizerCrewOptimization:
 
     @crew
     def crew(self) -> Crew:
-        """Create OptimizationStrategist crew with sequential task execution."""
+        """Create OptimizationStrategist crew with sequential task execution.
+
+        Phase 0001 updated: 5 sequential tasks:
+        1. generate_text_optimizations - 文本优化 (with ContentIntent constraint)
+        2. generate_visual_prompts - 视觉prompt生成 (with VisualSubjects constraint)
+        3. compile_optimization_plan - 编译优化方案
+        4. generate_images - 实际生成图片 (ImageGeneratorTool)
+        5. compile_optimized_note - 格式化为Note输出
+        """
         return Crew(
             agents=self.agents,
             tasks=self.tasks,
@@ -187,6 +265,7 @@ class XhsSeoOptimizerCrewOptimization:
 
         # Extract key fields for YAML variable substitution
         inputs['note_id'] = gap_report.get('owned_note_id', owned_note.get('note_id'))
+        inputs['original_note_id'] = inputs['note_id']  # Alias for task YAML template
         inputs['original_title'] = owned_note.get('title', '')
         inputs['original_content'] = owned_note.get('content', '')
 
@@ -316,6 +395,92 @@ class XhsSeoOptimizerCrewOptimization:
         print(f"  hashtags_features_to_optimize: {inputs['hashtags_features_to_optimize']}")
         print(f"{'='*80}\n")
 
+        # ========================================
+        # Phase 0001: Load ContentIntent and VisualSubjects from audit_report
+        # ========================================
+
+        # Extract ContentIntent (for content consistency)
+        # Variable names prefixed with content_intent_ to match YAML template
+        content_intent = audit_report.get('content_intent', {})
+        if content_intent:
+            inputs['content_intent_core_theme'] = content_intent.get('core_theme', '')
+            inputs['content_intent_target_persona'] = content_intent.get('target_persona', '')
+            inputs['content_intent_key_message'] = content_intent.get('key_message', '')
+            inputs['content_intent_unique_angle'] = content_intent.get('unique_angle', '')
+            inputs['content_intent_emotional_tone'] = content_intent.get('emotional_tone', '')
+            inputs['content_intent'] = content_intent
+            shared_context.set("content_intent", content_intent)
+        else:
+            # Fallback: extract from owned_note if not in audit_report
+            inputs['content_intent_core_theme'] = ''
+            inputs['content_intent_target_persona'] = ''
+            inputs['content_intent_key_message'] = ''
+            inputs['content_intent_unique_angle'] = ''
+            inputs['content_intent_emotional_tone'] = ''
+            inputs['content_intent'] = {}
+
+        # Extract VisualSubjects (for image generation consistency)
+        # Variable names prefixed with visual_ to match YAML template
+        visual_subjects = audit_report.get('visual_subjects', {})
+        if visual_subjects:
+            inputs['visual_subject_type'] = visual_subjects.get('subject_type', 'none')
+            inputs['visual_subject_description'] = visual_subjects.get('subject_description', '')
+            inputs['visual_brand_elements'] = json.dumps(
+                visual_subjects.get('brand_elements', []),
+                ensure_ascii=False
+            )
+            inputs['visual_must_preserve'] = json.dumps(
+                visual_subjects.get('must_preserve', []),
+                ensure_ascii=False
+            )
+            inputs['original_cover_url'] = visual_subjects.get('original_cover_url', '')
+            inputs['original_inner_urls'] = json.dumps(
+                visual_subjects.get('original_inner_urls', []),
+                ensure_ascii=False
+            )
+            inputs['visual_subjects'] = visual_subjects
+            shared_context.set("visual_subjects", visual_subjects)
+        else:
+            # Fallback: use owned_note data
+            meta_data = owned_note.get('meta_data', {})
+            inputs['visual_subject_type'] = 'none'
+            inputs['visual_subject_description'] = ''
+            inputs['visual_brand_elements'] = '[]'
+            inputs['visual_must_preserve'] = '[]'
+            inputs['original_cover_url'] = meta_data.get('cover_image_url', '')
+            inputs['original_inner_urls'] = json.dumps(
+                meta_data.get('inner_image_urls', []),
+                ensure_ascii=False
+            )
+            inputs['visual_subjects'] = {}
+
+        # Extract Marketing sensitivity (for soft-ad control)
+        inputs['marketing_level'] = audit_report.get('marketing_level', '')
+        inputs['is_soft_ad'] = audit_report.get('is_soft_ad', False)
+        inputs['marketing_sensitivity'] = audit_report.get('marketing_sensitivity', 'low')
+        shared_context.set("marketing_sensitivity", inputs['marketing_sensitivity'])
+        shared_context.set("is_soft_ad", inputs['is_soft_ad'])
+
+        # DEBUG: Print Phase 0001 variables
+        print(f"\n{'='*80}")
+        print(f"🔍 DEBUG: Phase 0001 Variables:")
+        print(f"  ContentIntent:")
+        print(f"    content_intent_core_theme: {inputs.get('content_intent_core_theme', 'N/A')}")
+        print(f"    content_intent_target_persona: {inputs.get('content_intent_target_persona', 'N/A')}")
+        print(f"    content_intent_key_message: {inputs.get('content_intent_key_message', 'N/A')}")
+        print(f"    content_intent_unique_angle: {inputs.get('content_intent_unique_angle', 'N/A')}")
+        print(f"    content_intent_emotional_tone: {inputs.get('content_intent_emotional_tone', 'N/A')}")
+        print(f"  VisualSubjects:")
+        print(f"    visual_subject_type: {inputs.get('visual_subject_type', 'N/A')}")
+        print(f"    visual_subject_description: {inputs.get('visual_subject_description', 'N/A')[:50]}...")
+        print(f"    visual_must_preserve: {inputs.get('visual_must_preserve', 'N/A')}")
+        print(f"    original_cover_url: {inputs.get('original_cover_url', 'N/A')[:50]}...")
+        print(f"  Marketing:")
+        print(f"    marketing_sensitivity: {inputs.get('marketing_sensitivity', 'N/A')}")
+        print(f"    is_soft_ad: {inputs.get('is_soft_ad', 'N/A')}")
+        print(f"    marketing_level: {inputs.get('marketing_level', 'N/A')}")
+        print(f"{'='*80}\n")
+
         return inputs
 
     def kickoff(self, inputs: Dict[str, Any]) -> Any:
@@ -345,12 +510,20 @@ class XhsSeoOptimizerCrewOptimization:
             priority_metrics: List of priority metrics that should be predicted
 
         Returns:
-            Modified result with validated expected_impact
+            Modified result with validated expected_impact (if applicable)
         """
         if not hasattr(result, 'pydantic') or not result.pydantic:
             return result
 
-        plan = result.pydantic
+        pydantic_obj = result.pydantic
+
+        # Phase 0001: 最终输出是 OptimizedNote，没有 expected_impact
+        # 只有中间输出 OptimizationPlan 才有 expected_impact
+        if not hasattr(pydantic_obj, 'expected_impact'):
+            print(f"\n🔍 DEBUG: 输出类型为 {type(pydantic_obj).__name__}，跳过 expected_impact 验证")
+            return result
+
+        plan = pydantic_obj
 
         # 1. 验证expected_impact只包含priority_metrics
         if plan.expected_impact:
@@ -372,31 +545,34 @@ class XhsSeoOptimizerCrewOptimization:
                     plan.expected_impact[metric] = f"优化方案针对{metric}的预期效果待评估"
                     print(f"   已添加占位符: {metric}")
 
-        # 2. 验证visual optimization逻辑一致性
-        has_cover_prompt = plan.visual_optimization and plan.visual_optimization.cover_prompt is not None
+        # 2. 验证visual optimization逻辑一致性 (只对 OptimizationPlan)
+        if hasattr(plan, 'visual_optimization'):
+            has_cover_prompt = plan.visual_optimization and plan.visual_optimization.cover_prompt is not None
 
-        # 从shared_context获取optimization_context
-        from xhs_seo_optimizer.shared_context import shared_context
-        optimization_context = shared_context.get('optimization_context', {})
-        has_visual_features = 'visual' in optimization_context.get('features_by_content_area', {})
+            # 从shared_context获取optimization_context
+            from xhs_seo_optimizer.shared_context import shared_context
+            optimization_context = shared_context.get('optimization_context', {})
+            has_visual_features = 'visual' in optimization_context.get('features_by_content_area', {})
 
-        if has_visual_features and not has_cover_prompt:
-            print(f"\n⚠️  WARNING: 需要优化visual特征但LLM未生成cover_prompt")
-            visual_features = optimization_context['features_by_content_area']['visual']
-            print(f"   Visual features: {visual_features}")
-        elif not has_visual_features and has_cover_prompt:
-            print(f"\n⚠️  WARNING: 不需要优化visual但LLM生成了cover_prompt（可能是误判）")
+            if has_visual_features and not has_cover_prompt:
+                print(f"\n⚠️  WARNING: 需要优化visual特征但LLM未生成cover_prompt")
+                visual_features = optimization_context['features_by_content_area']['visual']
+                print(f"   Visual features: {visual_features}")
+            elif not has_visual_features and has_cover_prompt:
+                print(f"\n⚠️  WARNING: 不需要优化visual但LLM生成了cover_prompt（可能是误判）")
 
         return result
 
     def _save_optimization_plan(self, result: Any):
-        """Save OptimizationPlan to outputs/optimization_plan.json.
+        """Save crew output to outputs directory.
+
+        Phase 0001: Output is OptimizedNote (saved to optimized_note.json)
+        Legacy: Output was OptimizationPlan (saved to optimization_plan.json)
 
         Args:
             result: CrewOutput from crew execution
         """
         os.makedirs("outputs", exist_ok=True)
-        output_path = "outputs/optimization_plan.json"
 
         # 验证并修正输出
         from xhs_seo_optimizer.shared_context import shared_context
@@ -411,6 +587,18 @@ class XhsSeoOptimizerCrewOptimization:
             result = self._validate_and_fix_output(result, priority_metrics)
         else:
             print("\n⚠️  WARNING: 无法获取priority_metrics，跳过验证")
+
+        # Determine output type and filename
+        output_type = "unknown"
+        if hasattr(result, 'pydantic') and result.pydantic:
+            output_type = type(result.pydantic).__name__
+
+        # Phase 0001: OptimizedNote -> optimized_note.json
+        # Legacy: OptimizationPlan -> optimization_plan.json
+        if output_type == "OptimizedNote":
+            output_path = "outputs/optimized_note.json"
+        else:
+            output_path = "outputs/optimization_plan.json"
 
         # Get JSON from result (try multiple formats for robustness)
         if hasattr(result, 'pydantic') and result.pydantic:
@@ -430,4 +618,4 @@ class XhsSeoOptimizerCrewOptimization:
         with open(output_path, 'w', encoding='utf-8') as f:
             f.write(report_json)
 
-        print(f"✓ OptimizationPlan saved to {output_path}")
+        print(f"✓ {output_type} saved to {output_path}")

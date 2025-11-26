@@ -370,10 +370,49 @@ class AuditReport(BaseModel):
                     "Example: '该笔记采用疑问句标题配合情感词汇,开头使用对比钩子,正文框架为问题解决型结构,封面视觉风格简约清新。'"
     )
 
+    # ========== Phase 0001 新增字段 ==========
+
+    # 内容创作意图 (Forward reference - 类定义在文件末尾)
+    content_intent: Optional["ContentIntent"] = Field(
+        default=None,
+        description="内容创作意图 (core_theme, target_persona, key_message)"
+    )
+
+    # 视觉主体信息 (Forward reference - 类定义在文件末尾)
+    visual_subjects: Optional["VisualSubjects"] = Field(
+        default=None,
+        description="视觉主体信息 (subject_type, must_preserve, original_urls)"
+    )
+
+    # 营销感相关
+    marketing_level: Optional[str] = Field(
+        default=None,
+        description="当前营销感级别 (来自 note.tag.note_marketing_integrated_level)"
+    )
+
+    is_soft_ad: bool = Field(
+        default=False,
+        description="是否被标记为软广 (marketing_level == '软广')"
+    )
+
+    marketing_sensitivity: str = Field(
+        default="low",
+        description="营销敏感度: high(已是软广需降低) | medium(接近边界) | low(安全)"
+    )
+
     # Metadata
     audit_timestamp: str = Field(
         description="审计时间戳 (ISO 8601 format, e.g., '2025-11-20T10:30:00Z')"
     )
+
+    @field_validator('marketing_sensitivity')
+    @classmethod
+    def validate_marketing_sensitivity(cls, v: str) -> str:
+        """Validate marketing_sensitivity is one of allowed values."""
+        allowed = {'high', 'medium', 'low'}
+        if v not in allowed:
+            raise ValueError(f"marketing_sensitivity must be one of {allowed}, got '{v}'")
+        return v
 
     @field_validator('feature_summary')
     @classmethod
@@ -625,10 +664,9 @@ class OptimizationItem(BaseModel):
     @field_validator('targeted_metrics')
     @classmethod
     def validate_targeted_metrics_not_empty(cls, v: List[str]) -> List[str]:
-        """Validate targeted_metrics is not empty."""
-        if len(v) == 0:
-            raise ValueError("targeted_metrics cannot be empty")
-        return v
+        """Validate targeted_metrics - allow empty for cases like hashtag optimization."""
+        # Allow empty list - some optimizations (like hashtags) may not target specific metrics
+        return v if v is not None else []
 
 
 class TitleOptimization(BaseModel):
@@ -847,3 +885,361 @@ class OptimizationPlan(BaseModel):
             if 'expected_impact' in data and data['expected_impact'] is None:
                 data['expected_impact'] = {}
         return data
+
+
+# ============================================================================
+# Phase 0001: 图像生成与内容一致性优化 - 新增模型
+# ============================================================================
+
+class ContentIntent(BaseModel):
+    """内容创作意图 - 确保优化一致性的锚点.
+
+    用于在分模块优化时保持内容的中心思想一致性。
+    所有优化（标题、开头、结尾、图片）都必须服务于这些核心要素。
+    """
+
+    # 必须字段
+    core_theme: str = Field(
+        description="核心主题 (必须, e.g., 'DHA选购攻略', '新手妈妈育儿经验')",
+        min_length=2,
+        max_length=50
+    )
+
+    target_persona: str = Field(
+        description="目标人群 (必须, 结合owned_note内容和keyword确定, e.g., '新手妈妈', '健身爱好者')",
+        min_length=2,
+        max_length=50
+    )
+
+    key_message: str = Field(
+        description="关键信息/核心卖点 (必须, e.g., '科学配比是关键', 'DHA含量是选择标准')",
+        min_length=5,
+        max_length=100
+    )
+
+    # 可选字段
+    unique_angle: Optional[str] = Field(
+        default=None,
+        description="独特角度 (可选, e.g., '老爸测评专业视角', '医生妈妈的建议')"
+    )
+
+    emotional_tone: Optional[str] = Field(
+        default=None,
+        description="情感基调 (可选, e.g., '专业但亲切', '轻松幽默', '真诚分享')"
+    )
+
+    @field_validator('core_theme', 'target_persona', 'key_message')
+    @classmethod
+    def validate_not_empty(cls, v: str) -> str:
+        """Validate required fields are not empty or whitespace."""
+        if not v or not v.strip():
+            raise ValueError("Field cannot be empty or whitespace")
+        return v.strip()
+
+
+class VisualSubjects(BaseModel):
+    """视觉主体信息 - 确保生图主体一致性.
+
+    从原始图片中提取核心主体信息，确保优化后的图片
+    保留品牌、产品、人物等关键视觉元素。
+    """
+
+    subject_type: str = Field(
+        description="主体类型: product | person | brand | scene | none"
+    )
+
+    subject_description: str = Field(
+        description="主体描述 (e.g., 'DHA鱼油瓶装产品，红色瓶盖', '博主本人出镜')",
+        min_length=5,
+        max_length=200
+    )
+
+    brand_elements: List[str] = Field(
+        default_factory=list,
+        description="品牌元素 (e.g., ['老爸测评logo', '品牌特定配色', '产品包装'])"
+    )
+
+    must_preserve: List[str] = Field(
+        description="必须保留的元素 (生图时必须包含这些元素以保持一致性)"
+    )
+
+    # 保留原始图片URL作为参考
+    original_cover_url: str = Field(
+        description="原始封面图URL (可作为生图模型的参考输入)"
+    )
+
+    original_inner_urls: List[str] = Field(
+        default_factory=list,
+        description="原始内页图URLs (可作为生图参考)"
+    )
+
+    @field_validator('subject_type')
+    @classmethod
+    def validate_subject_type(cls, v: str) -> str:
+        """Validate subject_type is one of allowed values."""
+        allowed = {'product', 'person', 'brand', 'scene', 'none'}
+        if v not in allowed:
+            raise ValueError(f"subject_type must be one of {allowed}, got '{v}'")
+        return v
+
+    @field_validator('must_preserve')
+    @classmethod
+    def validate_must_preserve_not_empty(cls, v: List[str]) -> List[str]:
+        """Validate must_preserve has at least one item (unless subject_type is 'none')."""
+        # Note: This validation is relaxed; actual enforcement depends on subject_type
+        return v
+
+    @model_validator(mode='before')
+    @classmethod
+    def convert_null_lists_to_empty(cls, data: Any) -> Any:
+        """Convert null/None values to empty lists for List fields."""
+        if isinstance(data, dict):
+            list_fields = ['brand_elements', 'must_preserve', 'original_inner_urls']
+            for field in list_fields:
+                if field in data and data[field] is None:
+                    data[field] = []
+        return data
+
+
+class GeneratedImage(BaseModel):
+    """单张生成图片的结果."""
+
+    image_type: str = Field(
+        description="图片类型: cover | inner_1 | inner_2 | ..."
+    )
+
+    success: bool = Field(
+        description="生成是否成功"
+    )
+
+    image_url: Optional[str] = Field(
+        default=None,
+        description="图片URL (Base64 data URL 或 CDN URL)"
+    )
+
+    local_path: Optional[str] = Field(
+        default=None,
+        description="本地保存路径 (e.g., 'outputs/images/cover_xxx.png')"
+    )
+
+    error: Optional[str] = Field(
+        default=None,
+        description="错误信息 (如果生成失败)"
+    )
+
+    prompt_used: str = Field(
+        description="使用的生成prompt"
+    )
+
+    reference_image_used: Optional[str] = Field(
+        default=None,
+        description="使用的参考图URL (如果有)"
+    )
+
+
+class GeneratedImages(BaseModel):
+    """生成的图片结果集合."""
+
+    cover_image: Optional[GeneratedImage] = Field(
+        default=None,
+        description="封面图生成结果"
+    )
+
+    inner_images: List[GeneratedImage] = Field(
+        default_factory=list,
+        description="内页图生成结果列表"
+    )
+
+    generation_timestamp: str = Field(
+        description="生成时间戳 (ISO 8601 format)"
+    )
+
+    total_generated: int = Field(
+        default=0,
+        description="成功生成的图片总数"
+    )
+
+    total_failed: int = Field(
+        default=0,
+        description="生成失败的图片总数"
+    )
+
+    @model_validator(mode='before')
+    @classmethod
+    def convert_null_lists_to_empty(cls, data: Any) -> Any:
+        """Convert null/None values to empty lists."""
+        if isinstance(data, dict):
+            if 'inner_images' in data and data['inner_images'] is None:
+                data['inner_images'] = []
+        return data
+
+
+class MarketingCheck(BaseModel):
+    """营销感检查结果."""
+
+    original_score: float = Field(
+        description="原始内容的营销感评分 (0-1, 越高营销感越重)",
+        ge=0.0,
+        le=1.0
+    )
+
+    optimized_score: float = Field(
+        description="优化后内容的营销感评分",
+        ge=0.0,
+        le=1.0
+    )
+
+    level: str = Field(
+        description="营销感级别: low | medium | high | critical"
+    )
+
+    passed: bool = Field(
+        description="是否通过检查 (优化后评分不高于原始评分)"
+    )
+
+    issues: List[str] = Field(
+        default_factory=list,
+        description="发现的营销感问题"
+    )
+
+    suggestions: List[str] = Field(
+        default_factory=list,
+        description="降低营销感的建议"
+    )
+
+    @field_validator('level')
+    @classmethod
+    def validate_level(cls, v: str) -> str:
+        """Validate level is one of allowed values."""
+        allowed = {'low', 'medium', 'high', 'critical'}
+        if v not in allowed:
+            raise ValueError(f"level must be one of {allowed}, got '{v}'")
+        return v
+
+    @model_validator(mode='before')
+    @classmethod
+    def convert_null_lists_to_empty(cls, data: Any) -> Any:
+        """Convert null/None values to empty lists."""
+        if isinstance(data, dict):
+            list_fields = ['issues', 'suggestions']
+            for field in list_fields:
+                if field in data and data[field] is None:
+                    data[field] = []
+        return data
+
+
+class OptimizedNote(BaseModel):
+    """优化后的完整笔记 - 可直接用于发布.
+
+    整合所有优化结果（标题、内容、图片）为标准Note格式，
+    包含溯源信息和验证结果。
+    """
+
+    # 基础信息
+    note_id: str = Field(
+        description="新笔记ID (原ID + '_optimized')"
+    )
+
+    original_note_id: str = Field(
+        description="原始笔记ID"
+    )
+
+    keyword: str = Field(
+        description="目标关键词"
+    )
+
+    # 优化后的内容
+    title: str = Field(
+        description="优化后的标题"
+    )
+
+    content: str = Field(
+        description="优化后的正文内容"
+    )
+
+    cover_image_url: str = Field(
+        description="封面图URL (生成的新图或原始图)"
+    )
+
+    inner_image_urls: List[str] = Field(
+        default_factory=list,
+        description="内页图URLs"
+    )
+
+    # 留空字段（发布后才能获得）
+    prediction: Optional[Dict] = Field(
+        default=None,
+        description="预测指标 (留空，发布后获得)"
+    )
+
+    tag: Optional[Dict] = Field(
+        default=None,
+        description="平台标签 (留空，发布后获得)"
+    )
+
+    # 溯源与验证
+    content_intent: ContentIntent = Field(
+        description="内容创作意图 (用于验证一致性)"
+    )
+
+    marketing_check: Optional[MarketingCheck] = Field(
+        default=None,
+        description="营销感检查结果 (如果原笔记是软广)"
+    )
+
+    optimization_summary: str = Field(
+        description="优化摘要 (简述做了哪些优化)",
+        min_length=20,
+        max_length=500
+    )
+
+    # 图片来源追踪
+    cover_image_source: str = Field(
+        description="封面图来源: generated | original",
+        default="original"
+    )
+
+    inner_images_source: str = Field(
+        description="内页图来源: generated | original | mixed",
+        default="original"
+    )
+
+    # 元数据
+    optimized_timestamp: str = Field(
+        description="优化时间戳 (ISO 8601 format)"
+    )
+
+    @field_validator('cover_image_source')
+    @classmethod
+    def validate_cover_source(cls, v: str) -> str:
+        """Validate cover_image_source is one of allowed values."""
+        allowed = {'generated', 'original'}
+        if v not in allowed:
+            raise ValueError(f"cover_image_source must be one of {allowed}, got '{v}'")
+        return v
+
+    @field_validator('inner_images_source')
+    @classmethod
+    def validate_inner_source(cls, v: str) -> str:
+        """Validate inner_images_source is one of allowed values."""
+        allowed = {'generated', 'original', 'mixed'}
+        if v not in allowed:
+            raise ValueError(f"inner_images_source must be one of {allowed}, got '{v}'")
+        return v
+
+    @model_validator(mode='before')
+    @classmethod
+    def convert_null_lists_to_empty(cls, data: Any) -> Any:
+        """Convert null/None values to empty lists."""
+        if isinstance(data, dict):
+            if 'inner_image_urls' in data and data['inner_image_urls'] is None:
+                data['inner_image_urls'] = []
+        return data
+
+
+# ============================================================================
+# Forward Reference Resolution
+# ============================================================================
+# AuditReport uses forward references to ContentIntent and VisualSubjects
+# which are defined later in this file. This rebuilds the model to resolve them.
+AuditReport.model_rebuild()

@@ -38,18 +38,33 @@ class VisionAnalysisResult(BaseModel):
     visual_hierarchy: str = Field(description="视觉层次分析")
 
     # 图内文字分析 (OCR Text Analysis)
-    text_ocr_content: str = Field(description="OCR识别的图中文字内容")
-    text_ocr_content_highlight: str = Field(description="OCR识别中突出的视觉重点文字")
+    text_ocr_content: Optional[str] = Field(
+        default=None,
+        description="OCR识别的图中文字内容 (图片可能没有文字)"
+    )
+    text_ocr_content_highlight: Optional[str] = Field(
+        default=None,
+        description="OCR识别中突出的视觉重点文字 (图片可能没有文字)"
+    )
 
     # 用户体验分析 (User Experience Analysis)
     user_experience_analysis: str = Field(description="整体用户体验分析")
     thumbnail_appeal: str = Field(description="封面图（首图）吸引力分析")
-    visual_storytelling: str = Field(description="内页图视觉叙事连贯性评估")
+    visual_storytelling: Optional[str] = Field(
+        default=None,
+        description="内页图视觉叙事连贯性评估 (单图笔记可能没有)"
+    )
     realistic_and_emotional_tone: str = Field(description="真实感和情绪基调评估")
 
     # 品牌识别分析 (Brand Recognition Analysis)
-    brand_consistency: str = Field(description="品牌一致性评估（平台调性+个人风格+品牌元素）")
-    personal_style: str = Field(description="个人风格特点")
+    brand_consistency: Optional[str] = Field(
+        default=None,
+        description="品牌一致性评估（平台调性+个人风格+品牌元素）(不是所有笔记都有品牌元素)"
+    )
+    personal_style: Optional[str] = Field(
+        default=None,
+        description="个人风格特点"
+    )
 
     # 详细分析 (Optional)
     detailed_analysis: Optional[str] = Field(
@@ -84,7 +99,10 @@ class TextAnalysisResult(BaseModel):
 
     # 结尾技巧分析 (Ending Technique Analysis)
     ending_technique: str = Field(description="结尾技巧类型")
-    ending_cta: str = Field(description="行动召唤内容")
+    ending_cta: Optional[str] = Field(
+        default=None,
+        description="行动召唤内容 (不是所有笔记都有明确CTA)"
+    )
     ending_resonance: str = Field(description="结尾共鸣度评估")
 
     # 基础指标 (Basic Metrics)
@@ -94,7 +112,10 @@ class TextAnalysisResult(BaseModel):
 
     # 痛点挖掘分析 (Pain Point Analysis)
     pain_points: List[str] = Field(description="痛点挖掘列表")
-    pain_intensity: str = Field(description="痛点强度评估")
+    pain_intensity: Optional[str] = Field(
+        default=None,
+        description="痛点强度评估 (如果没有明显痛点可能为空)"
+    )
 
     # 价值主张分析 (Value Proposition Analysis)
     value_propositions: List[str] = Field(description="价值主张列表")
@@ -115,7 +136,10 @@ class TextAnalysisResult(BaseModel):
 
     # 利益吸引分析 (Benefit Appeal Analysis)
     benefit_appeals: List[str] = Field(default_factory=list, description="利益点吸引列表")
-    transformation_promise: str = Field(description="转变承诺描述")
+    transformation_promise: Optional[str] = Field(
+        default=None,
+        description="转变承诺描述 (不是所有笔记都有转变承诺)"
+    )
 
     # Optional detailed analysis
     detailed_analysis: Optional[str] = Field(
