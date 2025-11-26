@@ -1,5 +1,11 @@
 # Task configuration for OptimizationStrategist crew
-# Sequential tasks: text optimization -> visual prompts -> compile plan
+# Sequential tasks: text optimization -> visual prompts -> compile plan -> generate images -> compile note
+#
+# Phase 0001 updates:
+# - generate_text_optimizations: Added ContentIntent constraints and marketing check
+# - generate_visual_prompts: Added VisualSubjects constraints
+# - generate_images: New task for actual image generation
+# - compile_optimized_note: New task to output final Note format
 
 generate_text_optimizations:
   description: >
@@ -7,6 +13,38 @@ generate_text_optimizations:
 
     ## 核心原则
     **只优化需要优化的特征（见下方数据input中的*_features_to_optimize变量），不要过度优化。**
+
+    ## Phase 0001: 内容一致性约束 (ContentIntent)
+    **所有优化必须围绕原始笔记的内容创作意图，保持中心思想一致性：**
+    - 核心主题 (core_theme): {content_intent_core_theme}
+    - 目标人群 (target_persona): {content_intent_target_persona}
+    - 关键信息 (key_message): {content_intent_key_message}
+    - 独特角度 (unique_angle): {content_intent_unique_angle}
+    - 情感基调 (emotional_tone): {content_intent_emotional_tone}
+
+    **一致性检查清单**（输出前必须验证）：
+    1. 标题是否传递 core_theme？
+    2. 标题/开头是否吸引 target_persona？
+    3. 内容是否突出 key_message？
+    4. 整体语气是否符合 emotional_tone？
+
+    ## Phase 0001: 营销感控制约束 (Marketing Sensitivity)
+    营销敏感度: {marketing_sensitivity}
+    当前营销标签: {marketing_level}
+    是否已标记为软广: {is_soft_ad}
+
+    **营销感控制规则**:
+    - 如果 marketing_sensitivity = "high"（已被标记为软广）：
+      * ❌ 禁止使用硬广词汇：购买、下单、链接、优惠券
+      * ❌ 禁止使用夸张用语：最好、必买、绝绝子、yyds
+      * ❌ 禁止使用强CTA：快去买、冲冲冲、姐妹们快
+      * ✅ 使用真实体验分享语气
+      * ✅ 使用客观描述而非推销语气
+    - 如果 marketing_sensitivity = "medium"：
+      * ⚠️ 注意减少推荐性词汇
+      * ✅ 增加个人真实感受描述
+    - 如果 marketing_sensitivity = "low"：
+      * ✅ 正常优化，无特殊限制
 
     ## 任务目标
     根据输入数据中的 *_features_to_optimize 变量，确定需要优化的文本区域：
@@ -77,6 +115,31 @@ generate_text_optimizations:
 generate_visual_prompts:
   description: >
     基于 optimization_context 生成**数据驱动**的视觉优化方案。
+
+    ## Phase 0001: 视觉主体一致性约束 (VisualSubjects)
+    **所有视觉优化必须保持与原始笔记视觉主体的一致性：**
+    - 主体类型 (subject_type): {visual_subject_type}
+    - 主体描述 (subject_description): {visual_subject_description}
+    - 品牌元素 (brand_elements): {visual_brand_elements}
+    - 必须保留的元素 (must_preserve): {visual_must_preserve}
+    - 原始封面图URL: {original_cover_url}
+    - 原始内页图URLs: {original_inner_urls}
+
+    **视觉一致性规则**：
+    1. 如果 subject_type = "product"：
+       - prompt 必须包含产品外观描述
+       - 产品在画面中的位置和比例需保持一致
+    2. 如果 subject_type = "person"：
+       - prompt 需描述人物特征（但不要具体面部细节）
+       - 保持人物出镜风格一致
+    3. 如果有 brand_elements：
+       - prompt 需提及品牌元素的保留需求
+       - logo/配色/包装等元素需在生成图片中体现
+    4. must_preserve 中的所有元素都必须在 prompt 中明确提及
+
+    **IMPORTANT - 引用图片约束**：
+    - 在生成图片时，请使用原始图片URL作为参考
+    - 这样可以帮助保持视觉风格一致性
 
     ## 任务目标
     根据数据input中的 need_visual_optimization 判断是否需要生成视觉优化方案：
@@ -199,4 +262,226 @@ compile_optimization_plan:
   expected_output: >
     完整的OptimizationPlan JSON对象，符合Pydantic模型定义。
     保持完整结构，对无需优化的部分用占位值或说明。
+  agent: optimization_strategist
+
+
+# ============================================================================
+# Phase 0001: 新增任务 - 图像生成
+# ============================================================================
+generate_images:
+  description: >
+    使用 ImageGeneratorTool 根据优化方案中的视觉 prompts 生成实际图片。
+
+    ## 任务目标
+    基于前一任务 (compile_optimization_plan) 输出的 OptimizationPlan，
+    调用 ImageGeneratorTool 生成封面图和内页图。
+
+    ## 输入数据
+    - optimization_plan: 前一任务输出的 OptimizationPlan JSON
+    - visual_subjects: 视觉主体信息
+      - subject_type: {visual_subject_type}
+      - must_preserve: {visual_must_preserve}
+      - original_cover_url: {original_cover_url}
+      - original_inner_urls: {original_inner_urls}
+    - need_visual_optimization: {need_visual_optimization}
+
+    ## 执行步骤
+
+    **如果 need_visual_optimization = False**：
+    - 跳过图片生成
+    - 返回使用原始图片的结果：
+      ```json
+      {
+        "images_generated": false,
+        "skip_reason": "视觉特征无需优化，保留原始图片",
+        "cover_image": {
+          "image_type": "cover",
+          "success": true,
+          "image_url": "{original_cover_url}",
+          "local_path": null,
+          "error": null,
+          "prompt_used": "保留原图",
+          "reference_image_used": null
+        },
+        "inner_images": []
+      }
+      ```
+
+    **如果 need_visual_optimization = True**：
+    1. **生成封面图**：
+       - 从 optimization_plan.visual_optimization.cover_prompt 提取 prompt
+       - 调用 ImageGeneratorTool:
+         * prompt: cover_prompt.prompt_text
+         * reference_image_url: {original_cover_url}（用于保持风格一致）
+         * must_preserve_elements: {visual_must_preserve}
+         * style_reference: cover_prompt.style_reference
+         * image_type: "cover"
+       - 记录生成结果（成功则有 image_url，失败则有 error）
+
+    2. **生成内页图**（如果有）：
+       - 从 optimization_plan.visual_optimization.inner_image_prompts 提取 prompts
+       - 对每个 prompt 调用 ImageGeneratorTool
+       - 使用对应的 original_inner_urls 作为参考
+       - 记录每个图片的生成结果
+
+    3. **汇总结果**：
+       - 统计成功/失败数量
+       - 对于失败的图片，记录错误信息和建议使用原图
+
+    ## 输出格式
+    返回 JSON 对象：
+    ```json
+    {
+      "images_generated": true,
+      "cover_image": {
+        "image_type": "cover",
+        "success": true/false,
+        "image_url": "生成的图片URL（成功时）",
+        "local_path": "本地保存路径（成功时）",
+        "error": "错误信息（失败时）",
+        "prompt_used": "使用的prompt",
+        "reference_image_used": "参考图片URL"
+      },
+      "inner_images": [
+        {
+          "image_type": "inner_1",
+          "success": true/false,
+          "image_url": "...",
+          "local_path": "...",
+          "error": "...",
+          "prompt_used": "...",
+          "reference_image_used": "..."
+        }
+      ],
+      "generation_summary": "生成结果摘要：成功N张，失败M张"
+    }
+    ```
+
+    ## 错误处理
+    - 如果封面图生成失败：记录错误，建议使用原图 {original_cover_url}
+    - 如果内页图生成失败：记录错误，建议使用对应的原图
+    - 所有图片都失败时：返回完整错误信息，保留原图URLs
+
+  expected_output: >
+    JSON格式的图片生成结果，包含cover_image和inner_images。
+    每个图片记录success状态、URL/路径或错误信息。
+  agent: image_generator
+
+
+# ============================================================================
+# Phase 0001: 新增任务 - 编译最终优化笔记
+# ============================================================================
+compile_optimized_note:
+  description: >
+    汇总所有优化结果，生成最终的 OptimizedNote 对象。
+
+    ## 任务目标
+    将文本优化、视觉优化、图片生成的结果整合为符合 Note 格式的最终输出。
+
+    ## 输入数据
+    - 笔记基础信息:
+      - note_id: {note_id}
+      - keyword: {keyword}
+      - original_title: {original_title}
+      - original_content: {original_content}
+    - content_intent (内容创作意图):
+      - core_theme: {content_intent_core_theme}
+      - target_persona: {content_intent_target_persona}
+      - key_message: {content_intent_key_message}
+      - unique_angle: {content_intent_unique_angle}
+      - emotional_tone: {content_intent_emotional_tone}
+    - 营销相关:
+      - marketing_sensitivity: {marketing_sensitivity}
+      - marketing_level: {marketing_level}
+      - is_soft_ad: {is_soft_ad}
+    - 原始图片URLs:
+      - original_cover_url: {original_cover_url}
+      - original_inner_urls: {original_inner_urls}
+    - 来自前序任务的结果:
+      - text_optimizations: generate_text_optimizations 任务输出
+      - optimization_plan: compile_optimization_plan 任务输出
+      - generated_images: generate_images 任务输出
+
+    ## 执行步骤
+
+    1. **选择最终标题**：
+       - 从 optimization_plan.title_optimization.alternatives 中选择
+       - 优先使用 recommended_index 指定的标题
+       - 如果无标题优化，使用 original_title
+
+    2. **整合最终正文**：
+       - 从 text_optimizations 中提取 opening_hook.optimized（如有）
+       - 从 text_optimizations 中提取 body_optimizations（如有）
+       - 从 text_optimizations 中提取 ending_cta.optimized（如有）
+       - 从 text_optimizations 中提取 hashtags.optimized（如有）
+       - 将各部分整合为完整正文
+       - 如无优化，使用 original_content
+
+    3. **确定最终图片**：
+       - 检查 generated_images.cover_image.success
+         * 如果成功：使用 generated_images.cover_image.image_url
+         * 如果失败或未生成：使用 original_cover_url
+       - 检查 generated_images.inner_images
+         * 成功的使用生成的 URL
+         * 失败的使用 original_inner_urls 中对应的 URL
+       - 记录 cover_image_source 和 inner_images_source
+
+    4. **构建 ContentIntent 对象**：
+       - 使用输入的 content_intent_* 变量构建
+
+    5. **进行营销感检查（可选）**：
+       - 如果 marketing_sensitivity = "high"：
+         * 对比优化前后的营销感评分
+         * 记录检查结果
+       - 否则：marketing_check = null
+
+    6. **生成优化摘要**：
+       - 列出哪些部分被优化了
+       - 说明主要改动和预期效果
+
+    ## 输出格式
+    返回符合 OptimizedNote schema 的 JSON 对象：
+    ```json
+    {
+      "note_id": "optimized_{original_note_id}",
+      "original_note_id": "{note_id}",
+      "keyword": "{keyword}",
+      "title": "选定的优化后标题",
+      "content": "整合后的完整正文内容",
+      "cover_image_url": "最终封面图URL",
+      "inner_image_urls": ["最终内页图URL1", "..."],
+      "prediction": null,
+      "tag": null,
+      "content_intent": {
+        "core_theme": "...",
+        "target_persona": "...",
+        "key_message": "...",
+        "unique_angle": "...",
+        "emotional_tone": "..."
+      },
+      "marketing_check": null 或 {
+        "original_score": 0.X,
+        "optimized_score": 0.X,
+        "level": "low/medium/high/critical",
+        "passed": true/false,
+        "issues": [],
+        "suggestions": []
+      },
+      "optimization_summary": "优化摘要：标题采用情感化改写，开头增加痛点钩子，封面图重新生成以提升吸引力...",
+      "cover_image_source": "generated/original",
+      "inner_images_source": "generated/original/mixed",
+      "optimized_timestamp": "ISO 8601 格式时间戳"
+    }
+    ```
+
+    ## 验证要点
+    - title 不能为空
+    - content 不能为空
+    - cover_image_url 必须是有效URL或原图URL
+    - content_intent 必须完整
+    - optimized_timestamp 使用当前时间
+
+  expected_output: >
+    完整的 OptimizedNote JSON 对象，符合 Note 格式要求。
+    包含优化后的 title、content、图片URLs，以及 content_intent 和 optimization_summary。
   agent: optimization_strategist

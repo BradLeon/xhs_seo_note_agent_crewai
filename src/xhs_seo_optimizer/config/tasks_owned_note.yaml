@@ -1,7 +1,11 @@
 # Task Configuration for Owned Note Auditor Crew
 # 自营笔记审计员 Crew 的任务配置
 #
-# 2 sequential tasks: extract features → generate report
+# 4 sequential tasks (Phase 0001 updated):
+# 1. extract_content_features - 提取文本和视觉特征
+# 2. extract_content_intent - 提取内容创作意图
+# 3. extract_visual_subjects - 提取视觉主体信息
+# 4. generate_audit_report - 生成完整审计报告
 
 extract_content_features:
   description: |
@@ -33,11 +37,128 @@ extract_content_features:
   agent: owned_note_auditor
 
 
+# ============================================================================
+# Phase 0001: 新增任务 - 内容创作意图提取
+# ============================================================================
+extract_content_intent:
+  description: |
+    **任务目标**: 提取内容创作意图 (ContentIntent)
+
+    分析笔记ID: {note_id}，关键词: {keyword}
+
+    **背景说明**:
+    ContentIntent 用于确保后续优化时保持内容的中心思想一致性。
+    所有优化（标题、开头、结尾、图片）都必须服务于这些核心要素。
+
+    **执行步骤**:
+
+    1. 分析笔记标题和内容:
+       - 标题: {original_title}
+       - 正文 (前500字): {original_content}
+
+    2. 结合关键词 "{keyword}" 推断目标人群:
+       - 思考: 谁会搜索这个关键词?
+       - 他们的需求是什么?
+       - 他们的痛点是什么?
+
+    3. 提取以下信息:
+       - **core_theme** (必须): 核心主题，2-50字符
+         * 例如: "DHA选购攻略"、"新手妈妈育儿经验"、"减脂期饮食指南"
+       - **target_persona** (必须): 目标人群，2-50字符
+         * 结合笔记内容和keyword确定
+         * 例如: "新手妈妈"、"健身爱好者"、"职场新人"
+       - **key_message** (必须): 关键信息/核心卖点，5-100字符
+         * 例如: "科学配比是关键"、"3步轻松搞定"
+       - **unique_angle** (可选): 独特角度
+         * 例如: "老爸测评专业视角"、"医生妈妈的建议"
+       - **emotional_tone** (可选): 情感基调
+         * 例如: "专业但亲切"、"轻松幽默"、"真诚分享"
+
+    **输出格式 (JSON)**:
+    ```json
+    {
+      "core_theme": "核心主题",
+      "target_persona": "目标人群",
+      "key_message": "关键信息",
+      "unique_angle": "独特角度 或 null",
+      "emotional_tone": "情感基调 或 null"
+    }
+    ```
+
+    **禁止事项**:
+    - ❌ 不要编造不存在的内容
+    - ❌ 不要使用过于宽泛的描述
+    - ✅ 基于实际标题和内容提取
+    - ✅ 结合keyword确定target_persona
+
+  expected_output: "ContentIntent JSON with core_theme, target_persona, key_message (required) and unique_angle, emotional_tone (optional)"
+  agent: owned_note_auditor
+
+
+# ============================================================================
+# Phase 0001: 新增任务 - 视觉主体提取
+# ============================================================================
+extract_visual_subjects:
+  description: |
+    **任务目标**: 提取视觉主体信息 (VisualSubjects)
+
+    分析笔记ID: {note_id}
+
+    **背景说明**:
+    VisualSubjects 用于确保后续生成图片时保持视觉主体一致性。
+    如果原图有产品、人物、品牌logo等主体，优化后的图片也应保留这些元素。
+
+    **执行步骤**:
+
+    1. 使用上游任务 (extract_content_features) 的视觉分析结果:
+       - VisionAnalysisResult 包含: image_style, color_scheme, visual_tone, layout_style 等
+
+    2. 从视觉分析中识别主体信息:
+       - **subject_type**: 主体类型
+         * "product" - 产品/商品
+         * "person" - 人物 (博主/模特)
+         * "brand" - 品牌元素为主
+         * "scene" - 场景/环境为主
+         * "none" - 无明显主体
+       - **subject_description**: 主体描述 (5-200字符)
+         * 例如: "DHA鱼油瓶装产品，红色瓶盖"
+         * 例如: "博主本人出镜，穿白色T恤"
+       - **brand_elements**: 品牌元素列表
+         * 例如: ["老爸测评logo", "品牌特定配色", "产品包装"]
+       - **must_preserve**: 必须保留的元素
+         * 生图时必须包含这些元素以保持一致性
+         * 例如: ["产品外观", "品牌logo位置", "整体色调"]
+
+    3. 记录原始图片URL:
+       - original_cover_url: {original_cover_url}
+       - original_inner_urls: {original_inner_urls}
+
+    **输出格式 (JSON)**:
+    ```json
+    {
+      "subject_type": "product|person|brand|scene|none",
+      "subject_description": "主体描述",
+      "brand_elements": ["元素1", "元素2"],
+      "must_preserve": ["必须保留1", "必须保留2"],
+      "original_cover_url": "原始封面图URL",
+      "original_inner_urls": ["内页图URL1", "内页图URL2"]
+    }
+    ```
+
+    **注意事项**:
+    - 如果 subject_type 为 "none"，must_preserve 可以只包含 "整体风格" 等抽象元素
+    - brand_elements 可以为空列表
+    - 原始图片URL必须从输入变量中获取，不要自己编造
+
+  expected_output: "VisualSubjects JSON with subject_type, subject_description, brand_elements, must_preserve, original_cover_url, original_inner_urls"
+  agent: owned_note_auditor
+
+
 generate_audit_report:
   description: |
-    **任务目标**: 生成客观的自营笔记审计报告
+    **任务目标**: 生成客观的自营笔记审计报告 (Phase 0001 更新版)
 
-    基于上游任务的结果，创建完整的 AuditReport。
+    基于上游任务的结果，创建完整的 AuditReport，包含内容意图和视觉主体信息。
 
     **执行步骤**:
 
@@ -45,35 +166,43 @@ generate_audit_report:
        - note_id: {note_id}
        - keyword: {keyword}
 
-    2. 收集分析结果:
-       - text_features: TextAnalysisResult (from Task 1)
-       - visual_features: VisionAnalysisResult (from Task 1)
+    2. 收集分析结果 (from Task 1: extract_content_features):
+       - text_features: TextAnalysisResult
+       - visual_features: VisionAnalysisResult
 
     3. 收集当前指标 (current_metrics):
        - 直接使用以下 JSON 字符串（已格式化，直接复制即可）:
          {current_metrics}
        - 包括: ctr, comment_rate, like_rate, fav_rate, share_rate, follow_rate,
                interaction_rate, ces_rate, impression, sort_score2
-       - 这些指标将用于GapFinder进行统计差距分析
        - ⚠️ 重要: 上面的 JSON 已经是正确格式，直接解析并嵌入到输出中即可
 
-    4. 生成客观特征摘要 (feature_summary):
+    4. 收集内容创作意图 (from Task 2: extract_content_intent):
+       - content_intent: ContentIntent JSON
+       - 必须包含: core_theme, target_persona, key_message
+       - 可选: unique_angle, emotional_tone
+
+    5. 收集视觉主体信息 (from Task 3: extract_visual_subjects):
+       - visual_subjects: VisualSubjects JSON
+       - 包含: subject_type, subject_description, brand_elements, must_preserve, original_cover_url, original_inner_urls
+
+    6. 收集营销感相关信息 (系统已预设):
+       - marketing_level: {marketing_level}
+       - is_soft_ad: {is_soft_ad}
+       - marketing_sensitivity: {marketing_sensitivity}
+
+    7. 生成客观特征摘要 (feature_summary):
        - 长度: 50-300个字符
-       - 内容: 描述笔记的特征组合，包括:
-         * 标题特征 (title_pattern, title_emotion)
-         * 开头策略 (opening_strategy, opening_hook)
-         * 正文框架 (content_framework)
-         * 结尾技巧 (ending_technique)
-         * 视觉风格 (image_style, color_scheme, visual_tone)
+       - 内容: 描述笔记的特征组合
        - **关键要求**: 必须客观描述，不含任何"好坏强弱"的判断词
        - 示例:
          "该笔记采用疑问句标题配合情感词汇,开头使用对比钩子吸引注意,正文框架为问题解决型结构,
           封面视觉风格简约清新,色彩方案以蓝白为主,整体呈现专业可信的调性。"
 
-    5. 添加时间戳:
-       - audit_timestamp: 当前时间 (ISO 8601 格式, e.g., "2025-11-20T15:30:00Z")
+    8. 添加时间戳:
+       - audit_timestamp: 当前时间 (ISO 8601 格式, e.g., "2025-11-26T15:30:00Z")
 
-    6. 创建完整的 AuditReport JSON，确保符合以下schema:
+    9. 创建完整的 AuditReport JSON，确保符合以下schema:
        ```
        {
          "note_id": str,
@@ -82,6 +211,11 @@ generate_audit_report:
          "visual_features": VisionAnalysisResult,
          "current_metrics": Dict[str, float],
          "feature_summary": str (50-300 chars, 客观描述),
+         "content_intent": ContentIntent (from Task 2),
+         "visual_subjects": VisualSubjects (from Task 3),
+         "marketing_level": str,
+         "is_soft_ad": bool,
+         "marketing_sensitivity": str ("high"|"medium"|"low"),
          "audit_timestamp": str
        }
        ```
@@ -89,7 +223,8 @@ generate_audit_report:
     **验证要点**:
     - feature_summary 必须 50-300 字符
     - feature_summary 不能包含判断词: 好/坏/弱/差/优秀/不足/weak/bad/poor/strong/excellent
-    - 所有嵌套对象 (text_features, visual_features) 必须完整
+    - 所有嵌套对象 (text_features, visual_features, content_intent, visual_subjects) 必须完整
+    - marketing_sensitivity 必须是 "high", "medium", 或 "low" 之一
 
     **禁止事项**:
     - ❌ 不要判断指标"强弱"（需要竞品数据对比）
@@ -106,6 +241,6 @@ generate_audit_report:
     - ✅ 直接输出符合 AuditReport schema 的单个 JSON 对象
     - ✅ 使用标准 JSON 格式（RFC 8259），不使用 JSON5 或其他扩展
 
-  expected_output: "A single valid JSON object conforming to AuditReport schema (no additional text or markdown)"
+  expected_output: "A single valid JSON object conforming to AuditReport schema with content_intent and visual_subjects (no additional text or markdown)"
   agent: owned_note_auditor
   output_file: "outputs/audit_report.json"

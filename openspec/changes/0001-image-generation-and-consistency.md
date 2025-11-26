@@ -1,6 +1,6 @@
 # 图像生成工具与内容一致性优化
 
-**Status:** proposal
+**Status:** applied
 **Created:** 2025-11-26
 **Updated:** 2025-11-26
 
