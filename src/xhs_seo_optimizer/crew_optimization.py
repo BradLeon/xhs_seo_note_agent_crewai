@@ -38,7 +38,7 @@ class XhsSeoOptimizerCrewOptimization:
     with specific content modifications and visual prompts.
     """
 
-    agents_config = 'config/agents_optimization.yaml'
+    agents_config = 'config/agents.yaml'
     tasks_config = 'config/tasks_optimization.yaml'
 
     def __init__(self):

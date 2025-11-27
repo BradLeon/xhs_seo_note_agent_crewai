@@ -28,7 +28,7 @@ except ImportError:
 
 from xhs_seo_optimizer.models.note import Note, ComplexInput
 from xhs_seo_optimizer.models.reports import SuccessProfileReport
-from xhs_seo_optimizer.crew_simple import XhsSeoOptimizerCrewSimple
+from xhs_seo_optimizer.crew_competitor_analyst import XhsSeoOptimizerCrewCompetitorAnalyst
 import logging
 logging.basicConfig(level=logging.INFO)
 
@@ -120,8 +120,8 @@ def test_with_crew():
     target_notes = load_target_notes(str(notes_path))
 
     # Create simplified crew
-    print("创建 XhsSeoOptimizerCrewSimple (简化版，仅含 competitor_analyst)...")
-    crew = XhsSeoOptimizerCrewSimple().crew()
+    print("创建 XhsSeoOptimizerCrewCompetitorAnalyst (简化版，仅含 competitor_analyst)...")
+    crew = XhsSeoOptimizerCrewCompetitorAnalyst().crew()
     print("✓ Crew 创建成功\n")
 
     # Prepare inputs using ComplexInput wrapper (following CrewAI official pattern)

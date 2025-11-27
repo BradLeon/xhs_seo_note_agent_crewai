@@ -38,7 +38,7 @@ complex_input = ComplexInput(
 crew.kickoff(inputs=complex_input.model_dump())
 ```
 
-在`@before_kickoff`中处理 (`src/xhs_seo_optimizer/crew_simple.py`):
+在`@before_kickoff`中处理 (`src/xhs_seo_optimizer/crew_competitor_analyst.py`):
 ```python
 @before_kickoff
 def validate_inputs(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
@@ -164,7 +164,7 @@ def _run(self, note_id: Optional[str] = None, note_metadata: Optional[dict] = No
     # 继续分析...
 ```
 
-在任务描述中引导Agent使用Smart Mode (`src/xhs_seo_optimizer/config/tasks_simple.yaml`):
+在任务描述中引导Agent使用Smart Mode (`src/xhs_seo_optimizer/config/tasks_competitor_analyst.yaml`):
 
 ```yaml
 extract_features:
@@ -205,7 +205,7 @@ analyze_competitors:
     # 总共需要约40+次工具调用
 ```
 
-**解决方案**: 拆分为4个顺序任务，使用`context`参数链接 (`src/xhs_seo_optimizer/config/tasks_simple.yaml`)
+**解决方案**: 拆分为4个顺序任务，使用`context`参数链接 (`src/xhs_seo_optimizer/config/tasks_competitor_analyst.yaml`)
 
 ```yaml
 # Task 1: 聚合统计（1次工具调用）
@@ -240,7 +240,7 @@ generate_report:
   output_file: "outputs/success_profile_report.json"
 ```
 
-在Crew中使用`context`参数链接任务 (`src/xhs_seo_optimizer/crew_simple.py`):
+在Crew中使用`context`参数链接任务 (`src/xhs_seo_optimizer/crew_competitor_analyst.py`):
 
 ```python
 @task
@@ -400,8 +400,8 @@ def _parse_vision_response(self, content: str):
 
 ### 修改文件
 - `src/xhs_seo_optimizer/models/note.py` - 添加ComplexInput类
-- `src/xhs_seo_optimizer/crew_simple.py` - 修改@before_kickoff，拆分4个任务
-- `src/xhs_seo_optimizer/config/tasks_simple.yaml` - 从1个任务拆分为4个
+- `src/xhs_seo_optimizer/crew_competitor_analyst.py` - 修改@before_kickoff，拆分4个任务
+- `src/xhs_seo_optimizer/config/tasks_competitor_analyst.yaml` - 从1个任务拆分为4个
 - `src/xhs_seo_optimizer/config/agents.yaml` - 增加max_iter=50
 - `src/xhs_seo_optimizer/tools/data_aggregator.py` - 实现Smart Mode（自动从shared_context获取）
 - `src/xhs_seo_optimizer/tools/nlp_analysis.py` - 实现Smart Mode（note_id自动获取）

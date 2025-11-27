@@ -1,7 +1,7 @@
-"""Simplified crew for testing CompetitorAnalyst agent only.
+"""CompetitorAnalyst crew for analyzing target notes success patterns.
 
-This is a minimal crew configuration that only includes the CompetitorAnalyst
-agent and analyze_competitors task, for testing the refactored agent-based approach.
+This crew analyzes target_notes to extract success patterns for a given keyword.
+It uses the CompetitorAnalyst agent with atomic tools (data aggregation, NLP, vision).
 """
 
 from crewai import Agent, Crew, Task, Process, LLM
@@ -18,12 +18,12 @@ from xhs_seo_optimizer.tools import (
 
 
 @CrewBase
-class XhsSeoOptimizerCrewSimple:
-    """Simplified crew for testing CompetitorAnalyst only.
+class XhsSeoOptimizerCrewCompetitorAnalyst:
+    """Crew for analyzing competitor notes success patterns.
 
-    This crew only includes:
+    This crew includes:
     - competitor_analyst agent
-    - analyze_competitors_task
+    - 4 sequential tasks: aggregate → extract features → analyze metrics → generate report
 
     It uses sequential process (not hierarchical) since we don't need a manager
     for a single agent.
@@ -33,7 +33,7 @@ class XhsSeoOptimizerCrewSimple:
     """
 
     agents_config = 'config/agents.yaml'
-    tasks_config = 'config/tasks_simple.yaml'
+    tasks_config = 'config/tasks_competitor_analyst.yaml'
 
     def __init__(self):
         # Check if proxy is configured via environment variables
@@ -50,7 +50,7 @@ class XhsSeoOptimizerCrewSimple:
         }
 
         self.custom_llm = LLM(
-            model='openrouter/google/gemini-2.5-flash-lite', 
+            model='openrouter/google/gemini-2.5-flash-lite',
             **llm_config
         )
 
@@ -58,7 +58,7 @@ class XhsSeoOptimizerCrewSimple:
             model='openrouter/deepseek/deepseek-r1-0528',
             **llm_config
 
-            
+
         )
 
     @before_kickoff
@@ -203,7 +203,7 @@ class XhsSeoOptimizerCrewSimple:
 
     @crew
     def crew(self) -> Crew:
-        """Assemble the simplified crew.
+        """Assemble the competitor analyst crew.
 
         Uses sequential process with 4 chained tasks:
         1. aggregate_statistics_task

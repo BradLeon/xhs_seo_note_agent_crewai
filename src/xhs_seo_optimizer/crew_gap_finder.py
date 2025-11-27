@@ -27,7 +27,7 @@ class XhsSeoOptimizerCrewGapFinder:
     to identify critical performance gaps and their root causes.
     """
 
-    agents_config = 'config/agents_gap_finder.yaml'
+    agents_config = 'config/agents.yaml'
     tasks_config = 'config/tasks_gap_finder.yaml'
 
     def __init__(self):

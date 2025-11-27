@@ -42,7 +42,7 @@ class XhsSeoOptimizerCrewOwnedNote:
     using model_dump() in @before_kickoff, then stored in shared_context for tools.
     """
 
-    agents_config = 'config/agents_owned_note.yaml'
+    agents_config = 'config/agents.yaml'
     tasks_config = 'config/tasks_owned_note.yaml'
 
     def __init__(self):

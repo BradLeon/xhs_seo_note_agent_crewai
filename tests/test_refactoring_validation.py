@@ -40,10 +40,10 @@ def test_atomic_tools_available():
 def test_simplified_crew_creation():
     """Verify that simplified crew can be created."""
     try:
-        from xhs_seo_optimizer.crew_simple import XhsSeoOptimizerCrewSimple
+        from xhs_seo_optimizer.crew_competitor_analyst import XhsSeoOptimizerCrewCompetitorAnalyst
 
         # Create crew instance
-        crew_instance = XhsSeoOptimizerCrewSimple()
+        crew_instance = XhsSeoOptimizerCrewCompetitorAnalyst()
         print("✓ Crew instance created")
 
         # Create actual crew
@@ -70,9 +70,9 @@ def test_simplified_crew_creation():
 def test_agent_tool_separation():
     """Verify that agent and tools are properly separated."""
     try:
-        from xhs_seo_optimizer.crew_simple import XhsSeoOptimizerCrewSimple
+        from xhs_seo_optimizer.crew_competitor_analyst import XhsSeoOptimizerCrewCompetitorAnalyst
 
-        crew_instance = XhsSeoOptimizerCrewSimple()
+        crew_instance = XhsSeoOptimizerCrewCompetitorAnalyst()
         crew = crew_instance.crew()
         agent = crew.agents[0]
 
