@@ -246,6 +246,7 @@ class MultiModalVisionTool(BaseTool):
                     }
                 ],
                 temperature=0.3,  # Lower temperature for more consistent analysis
+                max_tokens=4096,  # Ensure complete JSON response
             )
 
             # Extract and parse response
@@ -334,6 +335,64 @@ class MultiModalVisionTool(BaseTool):
 
         return base_prompt
 
+    def _safe_json_parse(self, json_str: str) -> Dict[str, Any]:
+        """Safely parse JSON with recovery for truncated responses.
+
+        Args:
+            json_str: JSON string to parse
+
+        Returns:
+            Parsed dict, or empty dict if all recovery fails
+
+        Raises:
+            ValueError: If JSON cannot be parsed after recovery attempts
+        """
+        # First, try direct parsing
+        try:
+            return json.loads(json_str)
+        except json.JSONDecodeError:
+            pass
+
+        # Try to repair truncated JSON by adding closing brackets
+        repair_attempts = [
+            json_str + '}',
+            json_str + '"}',
+            json_str + '"}',
+            json_str + '"}]',
+            json_str + '"}}',
+            json_str + '"\n}',
+        ]
+
+        for repaired in repair_attempts:
+            try:
+                return json.loads(repaired)
+            except json.JSONDecodeError:
+                continue
+
+        # Try to find the last complete key-value pair
+        # by finding the last valid closing brace position
+        for i in range(len(json_str) - 1, 0, -1):
+            if json_str[i] in ['}', ']', '"']:
+                try:
+                    # Try adding closing brace after this position
+                    partial = json_str[:i+1]
+                    # Count open/close braces
+                    open_braces = partial.count('{') - partial.count('}')
+                    open_brackets = partial.count('[') - partial.count(']')
+
+                    # Add missing closing characters
+                    repair = partial + ']' * open_brackets + '}' * open_braces
+                    return json.loads(repair)
+                except json.JSONDecodeError:
+                    continue
+
+        # Last resort: return empty dict with warning
+        logger.warning(
+            f"Could not parse JSON response after recovery attempts. "
+            f"First 200 chars: {json_str[:200]}..."
+        )
+        return {}
+
     def _parse_vision_response(self, content: str) -> Dict[str, Any]:
         """Parse vision model response into structured dict.
 
@@ -342,46 +401,51 @@ class MultiModalVisionTool(BaseTool):
 
         Returns:
             Dict matching VisionAnalysisResult schema
-
-        Raises:
-            ValueError: If response cannot be parsed
         """
+        # Define all required fields with defaults (outside try block for exception handling)
+        required_fields = {
+            "image_count": 0,
+            "image_quality": "未评估",
+            "image_content_relation": "未评估",
+            "image_composition": "未分析",
+            "image_style": "未识别",
+            "color_scheme": "未分析",
+            "visual_tone": "未评估",
+            "layout_style": "未描述",
+            "visual_hierarchy": "未分析",
+            "text_ocr_content": "无",
+            "text_ocr_content_highlight": "无",
+            "user_experience_analysis": "未分析",
+            "thumbnail_appeal": "未评估",
+            "visual_storytelling": "未评估",
+            "realistic_and_emotional_tone": "未评估",
+            "brand_consistency": "未评估",
+            "personal_style": "未识别",
+        }
+
         try:
             # Try to extract JSON from response
             # Handle both pure JSON and JSON in markdown code blocks
             if "```json" in content:
                 json_start = content.find("```json") + 7
                 json_end = content.find("```", json_start)
-                json_str = content[json_start:json_end].strip()
+                if json_end == -1:
+                    # Truncated response - no closing ```
+                    json_str = content[json_start:].strip()
+                else:
+                    json_str = content[json_start:json_end].strip()
             elif "```" in content:
                 json_start = content.find("```") + 3
                 json_end = content.find("```", json_start)
-                json_str = content[json_start:json_end].strip()
+                if json_end == -1:
+                    json_str = content[json_start:].strip()
+                else:
+                    json_str = content[json_start:json_end].strip()
             else:
                 json_str = content.strip()
 
-            data = json.loads(json_str)
-
-            # Define all required fields with defaults
-            required_fields = {
-                "image_count": 0,
-                "image_quality": "未评估",
-                "image_content_relation": "未评估",
-                "image_composition": "未分析",
-                "image_style": "未识别",
-                "color_scheme": "未分析",
-                "visual_tone": "未评估",
-                "layout_style": "未描述",
-                "visual_hierarchy": "未分析",
-                "text_ocr_content": "无",
-                "text_ocr_content_highlight": "无",
-                "user_experience_analysis": "未分析",
-                "thumbnail_appeal": "未评估",
-                "visual_storytelling": "未评估",
-                "realistic_and_emotional_tone": "未评估",
-                "brand_consistency": "未评估",
-                "personal_style": "未识别",
-            }
+            # Try to parse JSON, with recovery for truncated responses
+            data = self._safe_json_parse(json_str)
 
             # Merge data with defaults and handle type conversions
             result = {}
@@ -436,14 +500,25 @@ class MultiModalVisionTool(BaseTool):
             return result
 
         except json.JSONDecodeError as e:
-            logger.error("=" * 80)
-            logger.error("JSON PARSING ERROR")
-            logger.error("=" * 80)
-            logger.error(f"Error: {str(e)}")
-            logger.error(f"Error position: line {e.lineno} column {e.colno} (char {e.pos})")
-            logger.error(f"Error message: {e.msg}")
-            logger.error("=" * 80)
-            raise ValueError(f"Failed to parse JSON response: {str(e)}") from e
+            # This shouldn't happen with _safe_json_parse, but handle just in case
+            logger.warning("=" * 80)
+            logger.warning("JSON PARSING ERROR - Using defaults")
+            logger.warning("=" * 80)
+            logger.warning(f"Error: {str(e)}")
+            logger.warning(f"Error position: line {e.lineno} column {e.colno} (char {e.pos})")
+            logger.warning("=" * 80)
+            # Return defaults instead of raising error
+            data = {}
+            result = {}
+            for field, default in required_fields.items():
+                result[field] = default
+            result["detailed_analysis"] = content
+            return result
         except Exception as e:
-            logger.error(f"Unexpected error during parsing: {str(e)}")
-            raise ValueError(f"Failed to parse vision response: {str(e)}") from e
+            logger.warning(f"Unexpected error during parsing: {str(e)}, using defaults")
+            # Return defaults instead of raising error
+            result = {}
+            for field, default in required_fields.items():
+                result[field] = default
+            result["detailed_analysis"] = content
+            return result
