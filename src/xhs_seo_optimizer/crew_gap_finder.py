@@ -192,7 +192,7 @@ class XhsSeoOptimizerCrewGapFinder:
 
         return inputs
 
-    def kickoff(self, inputs: Dict[str, Any]) -> Any:
+    def kickoff(self, inputs: Dict[str, Any], save_to_file: bool = True) -> Any:
         """Execute gap analysis.
 
         Args:
@@ -200,6 +200,8 @@ class XhsSeoOptimizerCrewGapFinder:
                 - success_profile_report: SuccessProfileReport dict or JSON
                 - audit_report: AuditReport dict or JSON (must have current_metrics field)
                 - keyword: str
+            save_to_file: Whether to save output to outputs/gap_report.json.
+                Set to False when running in Flow mode (state handles data passing).
 
         Returns:
             CrewOutput with GapReport as pydantic attribute
@@ -208,8 +210,9 @@ class XhsSeoOptimizerCrewGapFinder:
         # Execute crew
         result = self.crew().kickoff(inputs=inputs)
 
-        # Save output to file
-        self._save_gap_report(result)
+        # Save output to file (optional, skip in Flow mode)
+        if save_to_file:
+            self._save_gap_report(result)
 
         return result
 

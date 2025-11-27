@@ -205,17 +205,24 @@ class XhsSeoOptimizerCrewOptimization:
     def validate_and_flatten_inputs(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
         """Validate and flatten inputs before crew execution.
 
-        Loads report files from outputs/ directory and flattens for YAML substitution.
+        Supports two modes:
+        1. FLOW MODE: Reports passed directly in inputs dict (from Flow state)
+        2. STANDALONE MODE: Reports loaded from outputs/ directory (backward compatible)
 
         Args:
             inputs: Must contain:
                 - keyword: str (target keyword)
+            Optional (for FLOW mode):
+                - gap_report: dict
+                - audit_report: dict
+                - success_profile_report: dict
+                - owned_note: dict
 
         Returns:
             Flattened dict with all report data for YAML variable substitution
 
         Raises:
-            ValueError: If required files are missing or invalid
+            ValueError: If required data is missing or invalid
         """
         # Validate keyword
         if 'keyword' not in inputs:
@@ -223,37 +230,74 @@ class XhsSeoOptimizerCrewOptimization:
 
         keyword = inputs['keyword']
 
+        # ========================================
+        # Mode Detection: FLOW vs STANDALONE
+        # ========================================
+        # If all reports are provided in inputs, use FLOW mode
+        # Otherwise, load from files (STANDALONE mode)
+        is_flow_mode = all(
+            key in inputs
+            for key in ['gap_report', 'audit_report', 'success_profile_report', 'owned_note']
+        )
+
         print(f"\n{'='*80}")
         print(f"🔍 DEBUG: validate_and_flatten_inputs called with keyword: {keyword}")
+        print(f"🔍 DEBUG: Mode: {'FLOW' if is_flow_mode else 'STANDALONE'}")
         print(f"{'='*80}\n")
 
-        # Load gap_report.json
-        gap_report_path = "outputs/gap_report.json"
-        if not os.path.exists(gap_report_path):
-            raise ValueError(f"Gap report not found: {gap_report_path}. Run GapFinder first.")
-        with open(gap_report_path, 'r', encoding='utf-8') as f:
-            gap_report = json.load(f)
+        if is_flow_mode:
+            # ========================================
+            # FLOW MODE: Use reports from inputs
+            # ========================================
+            gap_report = inputs['gap_report']
+            audit_report = inputs['audit_report']
+            success_profile_report = inputs['success_profile_report']
+            owned_note = inputs['owned_note']
 
-        # Load audit_report.json
-        audit_report_path = "outputs/audit_report.json"
-        if not os.path.exists(audit_report_path):
-            raise ValueError(f"Audit report not found: {audit_report_path}. Run OwnedNoteAuditor first.")
-        with open(audit_report_path, 'r', encoding='utf-8') as f:
-            audit_report = json.load(f)
+            # Handle Pydantic model inputs (convert to dict if needed)
+            if hasattr(gap_report, 'model_dump'):
+                gap_report = gap_report.model_dump()
+            if hasattr(audit_report, 'model_dump'):
+                audit_report = audit_report.model_dump()
+            if hasattr(success_profile_report, 'model_dump'):
+                success_profile_report = success_profile_report.model_dump()
+            if hasattr(owned_note, 'model_dump'):
+                owned_note = owned_note.model_dump()
 
-        # Load success_profile_report.json
-        success_profile_path = "outputs/success_profile_report.json"
-        if not os.path.exists(success_profile_path):
-            raise ValueError(f"Success profile not found: {success_profile_path}. Run CompetitorAnalyst first.")
-        with open(success_profile_path, 'r', encoding='utf-8') as f:
-            success_profile_report = json.load(f)
+            print("[OptimizationCrew] Running in FLOW mode - using reports from inputs")
+        else:
+            # ========================================
+            # STANDALONE MODE: Load from files
+            # ========================================
+            print("[OptimizationCrew] Running in STANDALONE mode - loading reports from files")
 
-        # Load owned_note.json for original content
-        owned_note_path = "docs/owned_note.json"
-        if not os.path.exists(owned_note_path):
-            raise ValueError(f"Owned note not found: {owned_note_path}")
-        with open(owned_note_path, 'r', encoding='utf-8') as f:
-            owned_note = json.load(f)
+            # Load gap_report.json
+            gap_report_path = "outputs/gap_report.json"
+            if not os.path.exists(gap_report_path):
+                raise ValueError(f"Gap report not found: {gap_report_path}. Run GapFinder first.")
+            with open(gap_report_path, 'r', encoding='utf-8') as f:
+                gap_report = json.load(f)
+
+            # Load audit_report.json
+            audit_report_path = "outputs/audit_report.json"
+            if not os.path.exists(audit_report_path):
+                raise ValueError(f"Audit report not found: {audit_report_path}. Run OwnedNoteAuditor first.")
+            with open(audit_report_path, 'r', encoding='utf-8') as f:
+                audit_report = json.load(f)
+
+            # Load success_profile_report.json
+            success_profile_path = "outputs/success_profile_report.json"
+            if not os.path.exists(success_profile_path):
+                raise ValueError(f"Success profile not found: {success_profile_path}. Run CompetitorAnalyst first.")
+            with open(success_profile_path, 'r', encoding='utf-8') as f:
+                success_profile_report = json.load(f)
+
+            # Load owned_note.json for original content
+            owned_note_path = "docs/owned_note.json"
+            if not os.path.exists(owned_note_path):
+                raise ValueError(f"Owned note not found: {owned_note_path}")
+            with open(owned_note_path, 'r', encoding='utf-8') as f:
+                owned_note = json.load(f)
 
         # Store in shared context
         from xhs_seo_optimizer.shared_context import shared_context

@@ -2,26 +2,14 @@
 # 小红书SEO优化多智能体系统的 Agent 统一配置
 #
 # This file defines all agents in the system:
-# 1. Orchestrator - Manager agent (coordinates workflow in hierarchical process)
-# 2. CompetitorAnalyst - Analyzes why target_notes score high
-# 3. OwnedNoteAuditor - Audits owned_note characteristics
-# 4. GapFinder - Identifies gaps between owned and target notes
-# 5. OptimizationStrategist - Generates optimization plan
-# 6. ImageGenerator - Generates images using AIGC tools
+# 1. CompetitorAnalyst - Analyzes why target_notes score high
+# 2. OwnedNoteAuditor - Audits owned_note characteristics
+# 3. GapFinder - Identifies gaps between owned and target notes
+# 4. OptimizationStrategist - Generates optimization plan
+# 5. ImageGenerator - Generates images using AIGC tools
 #
 # Note: Each crew file (crew_*.py) references this unified config.
-
-# ============================================================================
-# Orchestrator - 项目总监
-# ============================================================================
-orchestrator:
-  role: "项目总监 (Orchestrator)"
-  goal: "协调多个分析师，生成完整的内容优化方案"
-  backstory: |
-    你是一位经验丰富的项目经理，擅长协调团队成员，
-    确保各个分析环节有序进行，最终交付高质量的优化建议。
-  llm: "deepseek/deepseek-chat"
-
+# Orchestration is handled by CrewAI Flow (see flow.py).
 
 # ============================================================================
 # CompetitorAnalyst - 竞品分析师
