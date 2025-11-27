@@ -24,7 +24,7 @@ analyze_competitors  audit_owned_note  (parallel)
        compile_results
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from crewai.flow.flow import Flow, listen, start, and_
@@ -64,7 +64,7 @@ class XhsSeoOptimizerFlow(Flow[XhsSeoFlowState]):
         Returns:
             Updated flow state with validated inputs
         """
-        self.state.flow_started_at = datetime.utcnow().isoformat() + "Z"
+        self.state.flow_started_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
         print("\n" + "=" * 60)
         print("[Flow] XHS SEO Optimization Flow Started")
@@ -264,7 +264,7 @@ class XhsSeoOptimizerFlow(Flow[XhsSeoFlowState]):
         Returns:
             Final flow state with all results
         """
-        self.state.flow_completed_at = datetime.utcnow().isoformat() + "Z"
+        self.state.flow_completed_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
         print("\n" + "=" * 60)
         print("[Flow] XHS SEO Optimization Flow Complete!")

@@ -6,10 +6,9 @@ Note: CrewAI Flow uses internal state management. We test using the
 initial_state parameter and by directly manipulating the flow's internal state.
 """
 
-import json
 import pytest
 from unittest.mock import patch, MagicMock
-from datetime import datetime
+from datetime import datetime, timezone
 
 from xhs_seo_optimizer.flow import XhsSeoOptimizerFlow
 from xhs_seo_optimizer.flow_state import XhsSeoFlowState
@@ -275,13 +274,13 @@ class TestFlowExecution:
         flow = XhsSeoOptimizerFlow()
         flow._state = initial_state
 
-        before = datetime.utcnow().isoformat()
+        before = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
         result = flow.receive_inputs()
-        after = datetime.utcnow().isoformat()
+        after = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
         assert result.flow_started_at is not None
         # Timestamp should be between before and after
-        assert before <= result.flow_started_at.replace("Z", "") <= after + "Z"
+        assert before <= result.flow_started_at <= after
 
     @patch("xhs_seo_optimizer.flow.XhsSeoOptimizerCrewCompetitorAnalyst")
     def test_analyze_competitors_success(
@@ -485,17 +484,17 @@ class TestFlowExecution:
         flow = XhsSeoOptimizerFlow()
         flow._state = initial_state
 
-        flow.state.flow_started_at = datetime.utcnow().isoformat() + "Z"
+        flow.state.flow_started_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
         flow.state.optimized_note = mock_optimized_note
         mock_optimized_note.note_id = "test_optimized"
         mock_optimized_note.title = "优化后的标题测试"
 
-        before = datetime.utcnow().isoformat()
+        before = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
         result = flow.compile_results()
-        after = datetime.utcnow().isoformat()
+        after = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
         assert result.flow_completed_at is not None
-        assert before <= result.flow_completed_at.replace("Z", "") <= after + "Z"
+        assert before <= result.flow_completed_at <= after
 
 
 class TestFlowErrorHandling:
