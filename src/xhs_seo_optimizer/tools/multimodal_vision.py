@@ -134,7 +134,18 @@ class MultiModalVisionTool(BaseTool):
             # Find the note by note_id
             for note in notes:
                 if note.get('note_id') == note_id:
-                    note_metadata = note.get('meta_data')
+                    # Support both nested (meta_data) and flat structure
+                    if 'meta_data' in note:
+                        note_metadata = note.get('meta_data')
+                    else:
+                        # Flat structure - create meta_data from top-level fields
+                        note_metadata = {
+                            'note_id': note.get('note_id'),
+                            'title': note.get('title', ''),
+                            'content': note.get('content', ''),
+                            'cover_image_url': note.get('cover_image_url', ''),
+                            'inner_image_urls': note.get('inner_image_urls', []),
+                        }
                     logger.info(f"✓ Found note metadata for {note_id}")
                     break
 
