@@ -112,8 +112,20 @@ class XhsSeoOptimizerCrewOwnedNote:
             raise ValueError("owned_note must have note_id field")
         if "prediction" not in owned_note_data:
             raise ValueError("owned_note must have prediction field")
+
+        # Support both nested (meta_data) and flat structure
+        # If meta_data doesn't exist, create it from flat fields
         if "meta_data" not in owned_note_data:
-            raise ValueError("owned_note must have meta_data field")
+            # Check for required flat fields
+            if "title" not in owned_note_data:
+                raise ValueError("owned_note must have 'title' field (or nested 'meta_data')")
+            # Convert flat structure to nested meta_data
+            owned_note_data["meta_data"] = {
+                "title": owned_note_data.get("title", ""),
+                "content": owned_note_data.get("content", ""),
+                "cover_image_url": owned_note_data.get("cover_image_url", ""),
+                "inner_image_urls": owned_note_data.get("inner_image_urls", []),
+            }
 
         # Store serialized data in shared context (for tools to access)
         # Tools will use smart mode: multimodal_vision_analysis(note_id="xxx")

@@ -101,8 +101,15 @@ class DataAggregatorTool(BaseTool):
 
         try:
             # Reconstruct Note objects from serialized dicts
-            # Using Pydantic's native deserialization (works with model_dump() output)
-            notes = [Note(**note_dict) for note_dict in target_notes_data]
+            # Support both nested (model_dump output) and flat (raw JSON) structures
+            notes = []
+            for note_dict in target_notes_data:
+                if "meta_data" in note_dict:
+                    # Nested structure (from model_dump())
+                    notes.append(Note(**note_dict))
+                else:
+                    # Flat structure (from raw JSON files)
+                    notes.append(Note.from_json(note_dict))
             logger.info(f"Successfully reconstructed {len(notes)} Note objects")
 
             # Aggregate prediction metrics

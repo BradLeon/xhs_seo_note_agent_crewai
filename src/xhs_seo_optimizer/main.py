@@ -83,11 +83,11 @@ def run_flow(
     from xhs_seo_optimizer.flow import XhsSeoOptimizerFlow
     from xhs_seo_optimizer.flow_state import XhsSeoFlowState
 
-    # Initialize flow
+    # Initialize flow with initial state
     flow = XhsSeoOptimizerFlow()
 
-    # Set initial state
-    flow.state = XhsSeoFlowState(
+    # Set initial state (use _state for internal state access)
+    flow._state = XhsSeoFlowState(
         keyword=keyword,
         target_notes=target_notes,
         owned_note=owned_note,
