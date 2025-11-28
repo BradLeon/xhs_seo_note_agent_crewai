@@ -2,9 +2,15 @@
 
 Identifies statistically significant performance gaps between owned_note and target_notes,
 then maps gaps to actionable content features.
+
+Architecture:
+- General tasks (free-form text): Use LLM with OpenRouter
+- Structured output tasks (response_model): Use OpenAICompletion with Gemini OpenAI-compatible endpoint
 """
 
-from crewai import Agent, Crew, Task
+import re
+from crewai import Agent, Crew, Task, LLM
+from crewai.llms.providers.openai.completion import OpenAICompletion
 from crewai.project import CrewBase, agent, task, crew, before_kickoff
 from typing import Any, Dict
 import json
@@ -12,11 +18,7 @@ import os
 
 from .tools.statistical_delta import StatisticalDeltaTool
 from .models.reports import GapReport
-from .models.analysis_results import (
-    GapAnalysis,
-    FeatureMappedGapAnalysis,
-    PrioritizedGapAnalysis
-)
+from .models.analysis_results import GapAnalysis
 
 
 @CrewBase
@@ -25,6 +27,10 @@ class XhsSeoOptimizerCrewGapFinder:
 
     Compares SuccessProfileReport (what works) with AuditReport (current state)
     to identify critical performance gaps and their root causes.
+
+    Architecture:
+    - Tasks 1: Use gap_finder with OpenRouter LLM (free-form text)
+    - Task 2: Use report_generator with OpenAICompletion + Gemini (structured output via response_model)
     """
 
     agents_config = 'config/agents.yaml'
@@ -34,18 +40,49 @@ class XhsSeoOptimizerCrewGapFinder:
         """Initialize Gap Finder crew."""
         self.shared_context = {}
 
+        # General LLM (OpenRouter) - for free-form analysis tasks
+        self.general_llm = OpenAICompletion(
+            model='google/gemini-2.5-flash',
+            base_url='https://openrouter.ai/api/v1',
+            api_key=os.getenv("OPENROUTER_API_KEY", ""),
+            temperature=0.1,
+        )
+
+        # Structured output LLM (Gemini OpenAI-compatible endpoint)
+        self.structured_llm = OpenAICompletion(
+            model='gemini-2.5-flash',
+            base_url='https://generativelanguage.googleapis.com/v1beta/openai/',
+            api_key=os.getenv("GOOGLE_API_KEY", ""),
+            temperature=0.1,
+        )
+
     @agent
     def gap_finder(self) -> Agent:
-        """差距定位员 agent.
+        """差距定位员 agent (for free-form analysis tasks).
 
+        Uses OpenRouter LLM for free-form text output.
         Data-driven analyst that identifies statistical gaps and maps them
         to specific content features.
         """
         return Agent(
             config=self.agents_config['gap_finder'],
             tools=[StatisticalDeltaTool()],
+            llm=self.general_llm,
             verbose=True,
             allow_delegation=False
+        )
+
+    @agent
+    def report_generator(self) -> Agent:
+        """报告生成 agent (for structured output tasks).
+
+        Uses OpenAICompletion + Gemini for native structured output.
+        Specialized for tasks with response_model that require strict JSON conformance.
+        """
+        return Agent(
+            config=self.agents_config['report_generator'],
+            llm=self.general_llm,
+            verbose=False  # Less verbose for structured output
         )
 
     @task
@@ -54,56 +91,30 @@ class XhsSeoOptimizerCrewGapFinder:
 
         Output: GapAnalysis with significant_gaps, marginal_gaps, non_significant_gaps.
         Each Gap includes related_features and rationale from attribution.py.
+
+        Uses gap_finder agent with OpenRouter LLM for free-form analysis.
         """
         return Task(
             config=self.tasks_config['calculate_statistical_gaps'],
             agent=self.gap_finder(),
-            output_pydantic=GapAnalysis  # Enforce output schema
-        )
-
-    @task
-    def map_gaps_to_features(self) -> Task:
-        """Task 2: Map metric gaps to missing/weak features.
-
-        Output: FeatureMappedGapAnalysis with missing_features, weak_features,
-        gap_explanation, and recommendation_summary for each gap.
-        """
-        return Task(
-            config=self.tasks_config['map_gaps_to_features'],
-            agent=self.gap_finder(),
-            context=[self.calculate_statistical_gaps()],
-            output_pydantic=FeatureMappedGapAnalysis  # Enforce output schema
-        )
-
-    @task
-    def prioritize_gaps(self) -> Task:
-        """Task 3: Prioritize gaps and identify root causes.
-
-        Output: PrioritizedGapAnalysis with top_priority_metrics, root_causes,
-        and impact_summary.
-        """
-        return Task(
-            config=self.tasks_config['prioritize_gaps'],
-            agent=self.gap_finder(),
-            context=[self.calculate_statistical_gaps(), self.map_gaps_to_features()],
-            output_pydantic=PrioritizedGapAnalysis  # Enforce output schema
+            response_model=GapAnalysis
         )
 
     @task
     def generate_gap_report(self) -> Task:
-        """Task 4: Generate final GapReport JSON.
+        """Task 2: Generate final GapReport JSON (structured output).
 
+        Merges feature mapping, prioritization, and report generation into one task.
         Output: GapReport conforming to the final report schema with all metadata.
+
+        Uses report_generator agent with OpenAICompletion + response_model
+        for native structured output via Gemini OpenAI-compatible API.
         """
         return Task(
             config=self.tasks_config['generate_gap_report'],
-            agent=self.gap_finder(),
-            context=[
-                self.calculate_statistical_gaps(),
-                self.map_gaps_to_features(),
-                self.prioritize_gaps()
-            ],
-            output_pydantic=GapReport  # Final output validation
+            agent=self.report_generator(),  # Uses structured_llm
+            response_model=GapReport,  # Native structured output!
+            context=[self.calculate_statistical_gaps()]
         )
 
     @crew
@@ -192,52 +203,60 @@ class XhsSeoOptimizerCrewGapFinder:
 
         return inputs
 
-    def kickoff(self, inputs: Dict[str, Any]) -> Any:
-        """Execute gap analysis.
+    def kickoff(self, inputs: Dict[str, Any], save_to_file: bool = True) -> GapReport:
+        """Execute gap analysis and return structured output.
+
+        The generate_gap_report task uses response_model=GapReport with
+        OpenAICompletion + Gemini for native structured output. No post-processing needed.
 
         Args:
             inputs: Must contain:
                 - success_profile_report: SuccessProfileReport dict or JSON
                 - audit_report: AuditReport dict or JSON (must have current_metrics field)
                 - keyword: str
+            save_to_file: Whether to save output to outputs/gap_report.json.
+                Set to False when running in Flow mode (state handles data passing).
 
         Returns:
-            CrewOutput with GapReport as pydantic attribute
+            GapReport: Validated Pydantic model instance
         """
-        # @before_kickoff will validate and flatten inputs automatically
-        # Execute crew
-        result = self.crew().kickoff(inputs=inputs)
+        print("\n" + "="*60)
+        print("🚀 Starting GapFinder crew execution...")
+        print("="*60 + "\n")
 
-        # Save output to file
-        self._save_gap_report(result)
+        # Execute CrewAI task flow
+        # The last task (generate_gap_report) uses response_model for native structured output
+        crew_result = self.crew().kickoff(inputs=inputs)
 
-        return result
+        # Parse the structured output from crew result
+        # When response_model is used, crew_result.raw contains JSON string
+        if crew_result.pydantic:
+            # If CrewAI already parsed it as Pydantic
+            structured_report = crew_result.pydantic
+        else:
+            # Parse from raw JSON string
+            structured_report = GapReport.model_validate_json(crew_result.raw)
 
-    def _save_gap_report(self, result: Any):
+        # Save report to file (optional)
+        if save_to_file:
+            self._save_gap_report(structured_report)
+
+        print("\n" + "="*60)
+        print("✅ GapReport generated successfully!")
+        print("="*60 + "\n")
+
+        return structured_report
+
+    def _save_gap_report(self, report: GapReport) -> None:
         """Save GapReport to outputs/gap_report.json.
 
         Args:
-            result: CrewOutput from crew execution
+            report: GapReport Pydantic model instance
         """
         os.makedirs("outputs", exist_ok=True)
         output_path = "outputs/gap_report.json"
 
-        # Get JSON from result (try multiple formats for robustness)
-        if hasattr(result, 'pydantic') and result.pydantic:
-            # Preferred: Pydantic model
-            report_json = result.pydantic.model_dump_json(indent=2, ensure_ascii=False)
-        elif hasattr(result, 'json') and result.json:
-            # Alternative: JSON string
-            report_json = result.json
-        elif hasattr(result, 'raw'):
-            # Fallback: Raw output
-            report_json = result.raw
-        else:
-            # Last resort: Convert to string
-            report_json = str(result)
-
-        # Write to file with UTF-8 encoding (for Chinese text)
         with open(output_path, 'w', encoding='utf-8') as f:
-            f.write(report_json)
+            f.write(report.model_dump_json(indent=2, ensure_ascii=False))
 
         print(f"✓ GapReport saved to {output_path}")

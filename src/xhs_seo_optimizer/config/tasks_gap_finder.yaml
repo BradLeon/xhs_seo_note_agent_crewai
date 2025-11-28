@@ -1,7 +1,7 @@
 # Task Configuration for Gap Finder Crew
 # 差距定位员 Crew 的任务配置
 #
-# 4 sequential tasks: calculate gaps → map to features → prioritize → generate report
+# 2 sequential tasks: calculate gaps (Tool) → generate report (LLM reasoning)
 
 calculate_statistical_gaps:
   description: |
@@ -12,33 +12,32 @@ calculate_statistical_gaps:
     工具会自动从系统context中读取audit_report和success_profile_report。
 
     工具会自动执行以下计算：
-    1. 对每个指标计算统计差距：
-       - z_score = (owned_value - target_mean) / target_std
-       - p_value = 2 * (1 - norm.cdf(abs(z_score)))  # 双尾检验
-       - significance: critical (p<0.001), very_significant (p<0.01), significant (p<0.05), marginal (p<0.10), none
-
+    1. 对每个指标计算统计差距（z_score, p_value, significance）
     2. 按显著性分类: significant (p<0.05), marginal (0.05<=p<0.10), non_significant (p>=0.10)
-
-    3. 计算优先级分数: priority_score = |z_score| * |delta_pct| / 100
-
+    3. 计算优先级分数并排序
     4. 自动从attribution.py获取每个指标的related_features和rationale
 
     **执行步骤**:
-    1. 调用 statistical_delta_analysis()
-    2. 解析返回的GapAnalysis JSON结果
+    1. 调用 statistical_delta_analysis() 一次
+    2. 工具会直接返回 GapAnalysis JSON
 
-    输出：GapAnalysis结果，包含significant_gaps, marginal_gaps, non_significant_gaps, priority_order
+    **重要：输出格式要求**:
+    - 调用工具后，直接将工具返回的 JSON 作为你的输出
+    - ❌ 不要添加 "Final Answer:" 前缀
+    - ❌ 不要重复输出 JSON（只输出一次）
+    - ❌ 不要添加任何解释或评论
+    - ✅ 直接输出工具返回的纯 JSON（以 { 开头，以 } 结尾）
   expected_output: |
     GapAnalysis JSON，必须包含以下字段：
-    - significant_gaps: List[Gap] - 显著差距 (p < 0.05)
-    - marginal_gaps: List[Gap] - 边缘显著差距 (0.05 <= p < 0.10)
-    - non_significant_gaps: List[Gap] - 非显著差距 (p >= 0.10)
+    - significant_gaps: List[UnifiedGap] - 显著差距 (p < 0.05)
+    - marginal_gaps: List[UnifiedGap] - 边缘显著差距 (0.05 <= p < 0.10)
+    - non_significant_gaps: List[UnifiedGap] - 非显著差距 (p >= 0.10)
     - priority_order: List[str] - 按优先级排序的指标名称
     - sample_size: int - 竞品笔记样本量
 
-    每个Gap对象必须包含：
+    每个UnifiedGap对象必须包含（Task 1 填充的核心统计字段）：
     - metric: str - 指标名称
-    - owned_value: float - 客户笔记的值
+    - owned_value: float - 客户笔记的值 (可选)
     - target_mean: float - 目标笔记均值
     - target_std: float - 目标笔记标准差
     - delta_absolute: float - 绝对差值
@@ -51,127 +50,87 @@ calculate_statistical_gaps:
     - rationale: str - 特征归因理由
   agent: gap_finder
 
-map_gaps_to_features:
-  description: |
-    将指标差距映射到具体的内容特征缺失或执行不足。
-
-    输入数据 (from context):
-    - Task 1 输出: 统计差距分析 (significant_gaps list)，每个gap已包含related_features和rationale
-    - success_profile_report: 包含metric_profiles (每个指标的成功模式和相关特征)
-    - audit_report: 包含text_features和visual_features (客户笔记的实际特征)
-
-    任务：
-    对于每个significant gap:
-    1. 使用gap中已有的related_features列表（来自Task 1的StatisticalDeltaTool输出）
-    2. 比对audit_report的text_features/visual_features，识别：
-       - missing_features: related_features中客户笔记缺失的特征
-       - weak_features: 客户笔记中存在但执行不足的特征 (基于feature strength/score)
-    3. 结合gap.rationale，生成gap_explanation: 解释为什么这个指标差距存在 (2-3句话，基于特征对比)
-    4. 生成recommendation_summary: 简要建议如何改进 (1-2句话)
-
-    注意：特征归因信息(related_features和rationale)已由Task 1的StatisticalDeltaTool自动填充，
-    无需手动查找或硬编码。直接使用gap对象中的这些字段即可。
-
-    输出：为每个significant gap添加feature attribution和narrative
-  expected_output: |
-    FeatureMappedGapAnalysis JSON，必须包含以下字段：
-    - significant_gaps: List[FeatureMappedGap] - 显著差距，已包含特征映射
-    - marginal_gaps: List[FeatureMappedGap] - 边缘显著差距
-    - non_significant_gaps: List[FeatureMappedGap] - 非显著差距
-    - priority_order: List[str] - 按优先级排序的指标名称
-    - sample_size: int - 竞品笔记样本量
-
-    每个FeatureMappedGap对象必须包含Task 1的所有字段，加上：
-    - missing_features: List[str] - 客户笔记中缺失的关键特征
-    - weak_features: List[str] - 客户笔记中执行不足的特征
-    - gap_explanation: str - 差距原因解释 (50-200字符，2-3句话)
-    - recommendation_summary: str - 改进建议 (20-100字符，1-2句话)
-
-    字段长度约束：
-    - gap_explanation: 50-200字符
-    - recommendation_summary: 20-100字符
-  agent: gap_finder
-  context: [calculate_statistical_gaps]
-
-prioritize_gaps:
-  description: |
-    对差距进行优先级排序，并识别跨指标的根本原因。
-
-    输入数据 (from context):
-    - Task 1: priority_order (按统计显著性和影响magnitude排序)
-    - Task 2: feature-mapped gaps (包含missing_features和weak_features)
-
-    任务：
-    1. 使用Task 1的priority_order为每个gap分配priority_rank (1-based)
-    2. 识别top_priority_metrics: 选择top 3最重要的指标
-    3. 识别root_causes: 跨多个指标的共同原因
-       - 方法: 统计missing_features和weak_features的频率
-       - 选择出现频率最高的3-5个作为root causes
-       - 用中文描述 (如: "标题缺乏情感钩子", "封面视觉冲击力不足")
-    4. 生成impact_summary: 整体差距叙述 (50-500字符)
-       - 说明主要问题和整体影响
-       - 突出最严重的2-3个gap
-       - 指出改进方向
-  expected_output: |
-    PrioritizedGapAnalysis JSON，必须包含以下字段：
-    - significant_gaps: List[FeatureMappedGap] - 显著差距（继承自Task 2）
-    - marginal_gaps: List[FeatureMappedGap] - 边缘显著差距
-    - non_significant_gaps: List[FeatureMappedGap] - 非显著差距
-    - top_priority_metrics: List[str] - 前3个需要重点改进的指标（最多3个）
-    - root_causes: List[str] - 3-5个跨指标的根本原因
-    - impact_summary: str - 整体差距总结 (50-500字符)
-    - priority_order: List[str] - 按优先级排序的指标名称
-    - sample_size: int - 竞品笔记样本量
-
-    字段约束：
-    - top_priority_metrics: 最多3个
-    - root_causes: 3-5个
-    - impact_summary: 50-500字符，说明主要问题和整体影响，突出最严重的2-3个gap，指出改进方向
-  agent: gap_finder
-  context: [calculate_statistical_gaps, map_gaps_to_features]
-
 generate_gap_report:
   description: |
-    生成最终的GapReport JSON输出。
+    基于Task 1的统计差距分析，完成特征映射、优先级排序、根因分析，生成最终GapReport。
 
-    输入数据 (from all previous tasks):
-    - Task 1: 统计差距分类 (significant_gaps, marginal_gaps, non_significant_gaps)
-    - Task 2: 特征映射后的gap详细信息
-    - Task 3: 优先级排序和根本原因
-    - success_profile_report: 样本量信息
-    - audit_report: owned_note_id
+    **输入数据**:
+    - Task 1 输出: GapAnalysis (significant_gaps, marginal_gaps, non_significant_gaps, priority_order)
+    - success_profile_report: 包含metric_profiles (每个指标的成功模式和相关特征)
+    - audit_report: 包含text_features, visual_features (客户笔记的实际特征)
+    - keyword: {keyword}
+    - note_id: {note_id} (自有笔记ID，用于owned_note_id字段)
 
-    任务：
+    **任务内容（按顺序完成）**:
+
+    ## 第一步：特征映射 (Feature Mapping)
+
+    对于每个 significant_gap、marginal_gap 和 non_significant_gap:
+
+    1. 获取gap的related_features列表
+    2. 逐一检查audit_report中对应特征的实际值，判断是"缺失"还是"执行不足":
+
+    **如何判断 missing_features（缺失的特征）**:
+    - audit_report中该特征字段为 null、空字符串、空数组
+    - 例如: pain_points=[], ending_cta=null, social_proof=[]
+
+    **如何判断 weak_features（执行不足的特征）**:
+    - 特征存在但质量不高或不够突出
+    - 文本特征: 内容过于简单、缺乏情感、没有具体数据支撑
+    - 视觉特征: 评估词为"一般"、"普通"、"不突出"等
+    - 例如: title_emotion="中性" (应该更有感染力)
+    - 例如: opening_hook="直接陈述" (应该更有冲击力)
+    - 例如: thumbnail_appeal="一般" (应该更吸引眼球)
+
+    **特征映射示例**:
+    假设 related_features=["title_emotion", "opening_hook", "pain_points"]
+    audit_report.text_features:
+      - title_emotion: "中性、平淡" → weak_features.append("title_emotion")
+      - opening_hook: "故事型钩子" → OK, 不加入
+      - pain_points: [] → missing_features.append("pain_points")
+    结果: missing_features=["pain_points"], weak_features=["title_emotion"]
+
+    3. 基于识别出的missing/weak特征，生成:
+       - gap_explanation: 具体解释为什么差距存在，关联到具体特征 (50-200字符)
+       - recommendation_summary: 针对性改进建议 (20-100字符)
+
+    ## 第二步：优先级排序 (Prioritization)
+    1. 使用Task 1的priority_order为每个gap分配priority_rank (1-based)
+    2. 识别 top_priority_metrics: 选择top 3最重要的指标
+    3. 识别 root_causes: 汇总所有gaps的missing_features和weak_features，找出出现频率最高的3-5个
+       - 用中文描述 (如: "标题情感不够强烈", "缺少痛点挖掘", "封面视觉冲击力不足")
+    4. 生成 impact_summary: 整体差距叙述 (50-500字符)
+
+    ## 第三步：输出格式化
     1. 整合所有分析结果到GapReport模型
-    2. 确保所有字段符合Pydantic schema验证
-    3. 添加metadata: keyword, owned_note_id, sample_size, gap_timestamp
-    4. 输出为JSON格式
-
-    输出格式必须严格遵循GapReport Pydantic模型。
+    2. 添加metadata: keyword={keyword}, owned_note_id={note_id}, sample_size, gap_timestamp
+    3. 输出为JSON格式
 
     **输出格式要求（严格执行）**:
-    - 只输出 JSON，不要有任何额外文字或解释
-    - 不要使用 markdown 代码块
-    - JSON 必须完整且格式正确，不能有语法错误
-    - 不要在最后一个字段后添加逗号 (trailing comma)
-    - 所有字符串必须正确转义（如引号、换行符）
+    - ⚠️ 第一个字符必须是 `{`，最后一个字符必须是 `}`
+    - ⚠️ 不要有任何前置文字
+    - ⚠️ 只输出一个 JSON 对象
+    - ✅ 直接输出纯 JSON 对象
+
   expected_output: |
+    ⚠️ 严格要求：直接输出纯JSON，第一个字符必须是 `{`，不要有任何思考过程、解释或markdown代码块！
+
     GapReport JSON，必须包含以下字段：
 
     顶层字段：
     - keyword: str - 目标关键词
-    - owned_note_id: str - 自有笔记ID
-    - significant_gaps: List[MetricGap] - 显著差距 (p < 0.05)
-    - marginal_gaps: List[MetricGap] - 边缘显著差距 (0.05 <= p < 0.10)
-    - non_significant_gaps: List[MetricGap] - 非显著差距
+    - owned_note_id: str - 自有笔记ID (使用输入参数 note_id 的值: {note_id})
+    - significant_gaps: List[UnifiedGap] - 显著差距 (p < 0.05)
+    - marginal_gaps: List[UnifiedGap] - 边缘显著差距 (0.05 <= p < 0.10)
+    - non_significant_gaps: List[UnifiedGap] - 非显著差距
     - top_priority_metrics: List[str] - 最多3个重点指标
     - root_causes: List[str] - 3-5个根本原因
     - impact_summary: str - 整体影响总结 (50-500字符)
     - sample_size: int - 竞品笔记样本量
     - gap_timestamp: str - ISO 8601时间戳
 
-    每个MetricGap对象必须包含：
-    - metric_name: str - 指标名称
+    每个UnifiedGap对象必须包含：
+    - metric: str - 指标名称 (注意：使用 metric 而不是 metric_name)
     - owned_value: float - 客户笔记的值
     - target_mean: float - 目标笔记均值
     - target_std: float - 目标笔记标准差
@@ -179,22 +138,14 @@ generate_gap_report:
     - delta_pct: float - 百分比差值
     - z_score: float - Z分数
     - p_value: float - P值 (0.0-1.0)
-    - significance: str - 显著性级别
+    - significance: str - 显著性级别 (critical|very_significant|significant|marginal|none)
     - interpretation: str - 人类可读的解释
-    - priority_rank: int - 优先级排名 (1-based)
     - related_features: List[str] - 影响该指标的相关特征
     - rationale: str - 特征归因理由
-    - missing_features: List[str] - 缺失的关键特征
-    - weak_features: List[str] - 执行不足的特征
+    - missing_features: List[str] - 缺失的关键特征 (本任务填充)
+    - weak_features: List[str] - 执行不足的特征 (本任务填充)
     - gap_explanation: str - 差距原因解释 (50-200字符)
     - recommendation_summary: str - 改进建议 (20-100字符)
-
-    字段约束：
-    - top_priority_metrics: 最多3个
-    - root_causes: 3-5个
-    - impact_summary: 50-500字符
-    - gap_explanation: 50-200字符
-    - recommendation_summary: 20-100字符
+    - priority_rank: int - 优先级排名 (1-based)
   agent: gap_finder
-  context: [calculate_statistical_gaps, map_gaps_to_features, prioritize_gaps]
   output_file: outputs/gap_report.json

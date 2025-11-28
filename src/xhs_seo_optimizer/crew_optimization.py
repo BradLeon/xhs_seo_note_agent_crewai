@@ -9,24 +9,20 @@ Phase 0001 updates:
 - Marketing sensitivity control for soft-ad notes
 - Actual image generation via ImageGeneratorTool
 - Final OptimizedNote output in Note format
+
+Architecture:
+- General tasks (free-form text): Use LLM with OpenRouter
+- Structured output tasks (response_model): Use OpenAICompletion with Gemini OpenAI-compatible endpoint
 """
 
 from crewai import Agent, Crew, Task, LLM
+from crewai.llms.providers.openai.completion import OpenAICompletion
 from crewai.project import CrewBase, agent, task, crew, before_kickoff
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 import json
 import os
-from datetime import datetime
 
-from .models.reports import (
-    OptimizationPlan,
-    OptimizedNote,
-    GeneratedImages,
-    GeneratedImage,
-    ContentIntent,
-    VisualSubjects,
-    MarketingCheck
-)
+from .models.reports import OptimizedNote, OptimizationPlan
 from .tools import ImageGeneratorTool, MarketingSentimentTool
 
 
@@ -36,6 +32,10 @@ class XhsSeoOptimizerCrewOptimization:
 
     Transforms GapReport (performance gaps) into actionable OptimizationPlan
     with specific content modifications and visual prompts.
+
+    Architecture:
+    - Tasks 1-4: Use optimization_strategist/image_generator with OpenRouter LLM (free-form text)
+    - Task 5: Use report_generator with OpenAICompletion + Gemini (structured output via response_model)
     """
 
     agents_config = 'config/agents.yaml'
@@ -44,23 +44,29 @@ class XhsSeoOptimizerCrewOptimization:
     def __init__(self):
         """Initialize Optimization Strategist crew."""
         self.shared_context = {}
-        
-        llm_config = {
-            'base_url': 'https://openrouter.ai/api/v1',
-            'api_key': os.getenv("OPENROUTER_API_KEY", ""),
-            'temperature': 0.0
-        }
 
-        self.custom_llm = LLM(
-            model='openrouter/google/gemini-2.5-flash',
-            **llm_config
+        # General LLM (OpenRouter) - for free-form analysis tasks
+        self.general_llm = OpenAICompletion(
+            model='google/gemini-2.5-flash',
+            base_url='https://openrouter.ai/api/v1',
+            api_key=os.getenv("OPENROUTER_API_KEY", ""),
+            temperature=0.0,
+        )
+
+        # Structured output LLM (Gemini OpenAI-compatible endpoint)
+        self.structured_llm = OpenAICompletion(
+            model='gemini-2.5-flash',
+            base_url='https://generativelanguage.googleapis.com/v1beta/openai/',
+            api_key=os.getenv("GOOGLE_API_KEY", ""),
+            temperature=0.1,
         )
 
 
     @agent
     def optimization_strategist(self) -> Agent:
-        """优化策略师 agent.
+        """优化策略师 agent (for free-form analysis tasks).
 
+        Uses OpenRouter LLM for free-form text output.
         Creative strategist that transforms gap analysis into actionable
         content optimizations with specific, executable recommendations.
         """
@@ -68,7 +74,7 @@ class XhsSeoOptimizerCrewOptimization:
             config=self.agents_config['optimization_strategist'],
             tools=[MarketingSentimentTool()],  # Phase 0001: Add marketing check tool
             verbose=True,
-            llm=self.custom_llm,
+            llm=self.general_llm,
             allow_delegation=False
         )
 
@@ -76,6 +82,7 @@ class XhsSeoOptimizerCrewOptimization:
     def image_generator(self) -> Agent:
         """图像生成 agent (Phase 0001).
 
+        Uses OpenRouter LLM for free-form text output.
         Specialized agent for image generation using AIGC tools.
         Uses ImageGeneratorTool to generate images based on visual prompts.
         """
@@ -83,8 +90,21 @@ class XhsSeoOptimizerCrewOptimization:
             config=self.agents_config['image_generator'],
             tools=[ImageGeneratorTool()],
             verbose=True,
-            llm=self.custom_llm,
+            llm=self.general_llm,
             allow_delegation=False
+        )
+
+    @agent
+    def report_generator(self) -> Agent:
+        """报告生成 agent (for structured output tasks).
+
+        Uses OpenAICompletion + Gemini for native structured output.
+        Specialized for tasks with response_model that require strict JSON conformance.
+        """
+        return Agent(
+            config=self.agents_config['report_generator'],
+            llm=self.structured_llm,
+            verbose=False  # Less verbose for structured output
         )
 
     @task
@@ -117,6 +137,8 @@ class XhsSeoOptimizerCrewOptimization:
 
         Output: Complete OptimizationPlan with all optimizations,
         priority summary, and expected impact.
+
+        Uses optimization_strategist agent with OpenRouter LLM for free-form analysis.
         """
         return Task(
             config=self.tasks_config['compile_optimization_plan'],
@@ -125,7 +147,7 @@ class XhsSeoOptimizerCrewOptimization:
                 self.generate_text_optimizations(),
                 self.generate_visual_prompts()
             ],
-            output_pydantic=OptimizationPlan  # Final output validation
+            response_model=OptimizationPlan, 
         )
 
     @task
@@ -148,22 +170,24 @@ class XhsSeoOptimizerCrewOptimization:
 
     @task
     def compile_optimized_note(self) -> Task:
-        """Task 5: Compile final OptimizedNote in Note format (Phase 0001).
+        """Task 5: Compile final OptimizedNote in Note format (Phase 0001, structured output).
 
         Integrates all optimization results into a publishable Note format.
         Includes marketing check if original note was soft-ad.
 
         Output: OptimizedNote (can be directly published).
+
+        Uses report_generator agent with OpenAICompletion + response_model
+        for native structured output via Gemini OpenAI-compatible API.
         """
         return Task(
             config=self.tasks_config['compile_optimized_note'],
-            agent=self.optimization_strategist(),
+            agent=self.report_generator(),  # Uses structured_llm
+            response_model=OptimizedNote,  # Native structured output!
             context=[
                 self.compile_optimization_plan(),
                 self.generate_images()
-            ],
-            output_pydantic=OptimizedNote,
-            output_file="outputs/optimized_note.json"
+            ]
         )
 
     def _flatten_text_features(self, text_features: Dict) -> Dict[str, str]:
@@ -205,17 +229,24 @@ class XhsSeoOptimizerCrewOptimization:
     def validate_and_flatten_inputs(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
         """Validate and flatten inputs before crew execution.
 
-        Loads report files from outputs/ directory and flattens for YAML substitution.
+        Supports two modes:
+        1. FLOW MODE: Reports passed directly in inputs dict (from Flow state)
+        2. STANDALONE MODE: Reports loaded from outputs/ directory (backward compatible)
 
         Args:
             inputs: Must contain:
                 - keyword: str (target keyword)
+            Optional (for FLOW mode):
+                - gap_report: dict
+                - audit_report: dict
+                - success_profile_report: dict
+                - owned_note: dict
 
         Returns:
             Flattened dict with all report data for YAML variable substitution
 
         Raises:
-            ValueError: If required files are missing or invalid
+            ValueError: If required data is missing or invalid
         """
         # Validate keyword
         if 'keyword' not in inputs:
@@ -223,37 +254,74 @@ class XhsSeoOptimizerCrewOptimization:
 
         keyword = inputs['keyword']
 
+        # ========================================
+        # Mode Detection: FLOW vs STANDALONE
+        # ========================================
+        # If all reports are provided in inputs, use FLOW mode
+        # Otherwise, load from files (STANDALONE mode)
+        is_flow_mode = all(
+            key in inputs
+            for key in ['gap_report', 'audit_report', 'success_profile_report', 'owned_note']
+        )
+
         print(f"\n{'='*80}")
         print(f"🔍 DEBUG: validate_and_flatten_inputs called with keyword: {keyword}")
+        print(f"🔍 DEBUG: Mode: {'FLOW' if is_flow_mode else 'STANDALONE'}")
         print(f"{'='*80}\n")
 
-        # Load gap_report.json
-        gap_report_path = "outputs/gap_report.json"
-        if not os.path.exists(gap_report_path):
-            raise ValueError(f"Gap report not found: {gap_report_path}. Run GapFinder first.")
-        with open(gap_report_path, 'r', encoding='utf-8') as f:
-            gap_report = json.load(f)
+        if is_flow_mode:
+            # ========================================
+            # FLOW MODE: Use reports from inputs
+            # ========================================
+            gap_report = inputs['gap_report']
+            audit_report = inputs['audit_report']
+            success_profile_report = inputs['success_profile_report']
+            owned_note = inputs['owned_note']
 
-        # Load audit_report.json
-        audit_report_path = "outputs/audit_report.json"
-        if not os.path.exists(audit_report_path):
-            raise ValueError(f"Audit report not found: {audit_report_path}. Run OwnedNoteAuditor first.")
-        with open(audit_report_path, 'r', encoding='utf-8') as f:
-            audit_report = json.load(f)
+            # Handle Pydantic model inputs (convert to dict if needed)
+            if hasattr(gap_report, 'model_dump'):
+                gap_report = gap_report.model_dump()
+            if hasattr(audit_report, 'model_dump'):
+                audit_report = audit_report.model_dump()
+            if hasattr(success_profile_report, 'model_dump'):
+                success_profile_report = success_profile_report.model_dump()
+            if hasattr(owned_note, 'model_dump'):
+                owned_note = owned_note.model_dump()
 
-        # Load success_profile_report.json
-        success_profile_path = "outputs/success_profile_report.json"
-        if not os.path.exists(success_profile_path):
-            raise ValueError(f"Success profile not found: {success_profile_path}. Run CompetitorAnalyst first.")
-        with open(success_profile_path, 'r', encoding='utf-8') as f:
-            success_profile_report = json.load(f)
+            print("[OptimizationCrew] Running in FLOW mode - using reports from inputs")
+        else:
+            # ========================================
+            # STANDALONE MODE: Load from files
+            # ========================================
+            print("[OptimizationCrew] Running in STANDALONE mode - loading reports from files")
 
-        # Load owned_note.json for original content
-        owned_note_path = "docs/owned_note.json"
-        if not os.path.exists(owned_note_path):
-            raise ValueError(f"Owned note not found: {owned_note_path}")
-        with open(owned_note_path, 'r', encoding='utf-8') as f:
-            owned_note = json.load(f)
+            # Load gap_report.json
+            gap_report_path = "outputs/gap_report.json"
+            if not os.path.exists(gap_report_path):
+                raise ValueError(f"Gap report not found: {gap_report_path}. Run GapFinder first.")
+            with open(gap_report_path, 'r', encoding='utf-8') as f:
+                gap_report = json.load(f)
+
+            # Load audit_report.json
+            audit_report_path = "outputs/audit_report.json"
+            if not os.path.exists(audit_report_path):
+                raise ValueError(f"Audit report not found: {audit_report_path}. Run OwnedNoteAuditor first.")
+            with open(audit_report_path, 'r', encoding='utf-8') as f:
+                audit_report = json.load(f)
+
+            # Load success_profile_report.json
+            success_profile_path = "outputs/success_profile_report.json"
+            if not os.path.exists(success_profile_path):
+                raise ValueError(f"Success profile not found: {success_profile_path}. Run CompetitorAnalyst first.")
+            with open(success_profile_path, 'r', encoding='utf-8') as f:
+                success_profile_report = json.load(f)
+
+            # Load owned_note.json for original content
+            owned_note_path = "docs/owned_note.json"
+            if not os.path.exists(owned_note_path):
+                raise ValueError(f"Owned note not found: {owned_note_path}")
+            with open(owned_note_path, 'r', encoding='utf-8') as f:
+                owned_note = json.load(f)
 
         # Store in shared context
         from xhs_seo_optimizer.shared_context import shared_context
@@ -483,24 +551,44 @@ class XhsSeoOptimizerCrewOptimization:
 
         return inputs
 
-    def kickoff(self, inputs: Dict[str, Any]) -> Any:
-        """Execute optimization strategy generation.
+    def kickoff(self, inputs: Dict[str, Any]) -> OptimizedNote:
+        """Execute optimization strategy and return structured output.
+
+        The compile_optimized_note task uses response_model=OptimizedNote with
+        OpenAICompletion + Gemini for native structured output. No post-processing needed.
 
         Args:
             inputs: Must contain:
                 - keyword: str (target keyword)
 
         Returns:
-            CrewOutput with OptimizationPlan as pydantic attribute
+            OptimizedNote: Validated Pydantic model instance
         """
-        # @before_kickoff will validate and load all inputs automatically
-        # Execute crew
-        result = self.crew().kickoff(inputs=inputs)
+        print("\n" + "="*60)
+        print("🚀 Starting OptimizationStrategist crew execution...")
+        print("="*60 + "\n")
 
-        # Save output to file
-        self._save_optimization_plan(result)
+        # Execute CrewAI task flow
+        # The last task (compile_optimized_note) uses response_model for native structured output
+        crew_result = self.crew().kickoff(inputs=inputs)
 
-        return result
+        # Parse the structured output from crew result
+        # When response_model is used, crew_result.raw contains JSON string
+        if crew_result.pydantic:
+            # If CrewAI already parsed it as Pydantic
+            structured_note = crew_result.pydantic
+        else:
+            # Parse from raw JSON string
+            structured_note = OptimizedNote.model_validate_json(crew_result.raw)
+
+        # Save report to file
+        self._save_optimized_note(structured_note)
+
+        print("\n" + "="*60)
+        print("✅ OptimizedNote generated successfully!")
+        print("="*60 + "\n")
+
+        return structured_note
 
     def _validate_and_fix_output(self, result: Any, priority_metrics: List[str]) -> Any:
         """验证并修正LLM输出，防止幻觉.
@@ -563,59 +651,16 @@ class XhsSeoOptimizerCrewOptimization:
 
         return result
 
-    def _save_optimization_plan(self, result: Any):
-        """Save crew output to outputs directory.
-
-        Phase 0001: Output is OptimizedNote (saved to optimized_note.json)
-        Legacy: Output was OptimizationPlan (saved to optimization_plan.json)
+    def _save_optimized_note(self, note: OptimizedNote) -> None:
+        """Save OptimizedNote to outputs directory.
 
         Args:
-            result: CrewOutput from crew execution
+            note: OptimizedNote Pydantic model instance
         """
         os.makedirs("outputs", exist_ok=True)
+        output_path = "outputs/optimized_note.json"
 
-        # 验证并修正输出
-        from xhs_seo_optimizer.shared_context import shared_context
-        priority_metrics = shared_context.get('top_priority_metrics', [])
-        if not priority_metrics:
-            # 从gap_report中提取
-            gap_report = shared_context.get('gap_report', {})
-            priority_metrics = gap_report.get('top_priority_metrics', [])
-
-        if priority_metrics:
-            print(f"\n🔍 DEBUG: 找到priority_metrics进行验证: {priority_metrics}")
-            result = self._validate_and_fix_output(result, priority_metrics)
-        else:
-            print("\n⚠️  WARNING: 无法获取priority_metrics，跳过验证")
-
-        # Determine output type and filename
-        output_type = "unknown"
-        if hasattr(result, 'pydantic') and result.pydantic:
-            output_type = type(result.pydantic).__name__
-
-        # Phase 0001: OptimizedNote -> optimized_note.json
-        # Legacy: OptimizationPlan -> optimization_plan.json
-        if output_type == "OptimizedNote":
-            output_path = "outputs/optimized_note.json"
-        else:
-            output_path = "outputs/optimization_plan.json"
-
-        # Get JSON from result (try multiple formats for robustness)
-        if hasattr(result, 'pydantic') and result.pydantic:
-            # Preferred: Pydantic model
-            report_json = result.pydantic.model_dump_json(indent=2, ensure_ascii=False)
-        elif hasattr(result, 'json') and result.json:
-            # Alternative: JSON string
-            report_json = result.json
-        elif hasattr(result, 'raw'):
-            # Fallback: Raw output
-            report_json = result.raw
-        else:
-            # Last resort: Convert to string
-            report_json = str(result)
-
-        # Write to file with UTF-8 encoding (for Chinese text)
         with open(output_path, 'w', encoding='utf-8') as f:
-            f.write(report_json)
+            f.write(note.model_dump_json(indent=2, ensure_ascii=False))
 
-        print(f"✓ {output_type} saved to {output_path}")
+        print(f"✓ OptimizedNote saved to {output_path}")
