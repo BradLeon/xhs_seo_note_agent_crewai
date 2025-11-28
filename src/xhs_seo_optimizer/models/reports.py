@@ -11,9 +11,9 @@ Pydantic models for agent-generated reports:
 """
 
 from typing import List, Dict, Any, Optional
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import AliasChoices, BaseModel, Field, field_validator, model_validator
 
-from .analysis_results import AggregatedMetrics, TextAnalysisResult, VisionAnalysisResult
+from .analysis_results import AggregatedMetrics, TextAnalysisResult, VisionAnalysisResult, UnifiedGap
 
 
 class FeaturePattern(BaseModel):
@@ -212,23 +212,25 @@ class MetricSuccessProfile(BaseModel):
         description="该指标的相关特征列表（来自attribution规则） (Relevant features from attribution rules)"
     )
 
-    feature_analyses: Dict[str, FeatureAnalysis] = Field(
-        description="每个特征的详细分析，key为feature_name (Detailed analysis for each feature)"
+    feature_analyses: Optional[Dict[str, FeatureAnalysis]] = Field(
+        default=None,
+        description="每个特征的详细分析，key为feature_name (Detailed analysis for each feature, Optional - 低方差时可为空)"
     )
 
     metric_success_narrative: str = Field(
         description="该指标成功的整体叙述（2-3句话，说明这些特征如何协同驱动该指标） (Holistic explanation)"
     )
 
-    timestamp: str = Field(
-        description="分析时间戳 (Analysis timestamp in ISO 8601 format)"
+    timestamp: Optional[str] = Field(
+        default=None,
+        description="分析时间戳 (Analysis timestamp in ISO 8601 format, Optional)"
     )
 
     @field_validator('variance_level')
     @classmethod
     def validate_variance_level(cls, v: str) -> str:
-        """Validate variance_level is one of: low, high, low_sample_fallback."""
-        allowed_levels = {'low', 'high', 'low_sample_fallback'}
+        """Validate variance_level is one of: low, medium, high."""
+        allowed_levels = {'low', 'medium', 'high'}
         if v not in allowed_levels:
             raise ValueError(f"variance_level must be one of {allowed_levels}, got '{v}'")
         return v
@@ -243,11 +245,14 @@ class MetricSuccessProfile(BaseModel):
 
     @model_validator(mode='before')
     @classmethod
-    def convert_null_lists_to_empty(cls, data: Any) -> Any:
-        """Convert null/None values to empty lists for List[str] fields."""
+    def convert_null_to_defaults(cls, data: Any) -> Any:
+        """Convert null/None values to appropriate defaults."""
         if isinstance(data, dict):
             if 'relevant_features' in data and data['relevant_features'] is None:
                 data['relevant_features'] = []
+            # feature_analyses: None -> {} (empty dict, Optional field)
+            if 'feature_analyses' in data and data['feature_analyses'] is None:
+                data['feature_analyses'] = {}
         return data
 
 
@@ -373,9 +378,8 @@ class AuditReport(BaseModel):
     # ========== Phase 0001 新增字段 ==========
 
     # 内容创作意图 (Forward reference - 类定义在文件末尾)
-    content_intent: Optional["ContentIntent"] = Field(
-        default=None,
-        description="内容创作意图 (core_theme, target_persona, key_message)"
+    content_intent: "ContentIntent" = Field(
+        description="内容创作意图 (core_theme, target_persona, key_message) - 必填"
     )
 
     # 视觉主体信息 (Forward reference - 类定义在文件末尾)
@@ -429,113 +433,6 @@ class AuditReport(BaseModel):
         return v
 
 
-class MetricGap(BaseModel):
-    """单个指标的差距分析 (Gap analysis for a single metric).
-
-    Final schema for GapReport output. Includes all statistical, attribution,
-    and narrative fields.
-    """
-
-    metric_name: str = Field(
-        description="指标名称 (e.g., 'ctr', 'comment_rate', 'sort_score2')"
-    )
-
-    # Statistical fields
-    owned_value: float = Field(
-        description="客户笔记的当前值 (Owned note's current value)"
-    )
-
-    target_mean: float = Field(
-        description="竞品笔记的平均值 (Target notes' mean value)"
-    )
-
-    target_std: float = Field(
-        description="竞品笔记的标准差 (Target notes' std dev)"
-    )
-
-    delta_absolute: float = Field(
-        description="绝对差距 (Absolute difference: owned - target)"
-    )
-
-    delta_pct: float = Field(
-        description="百分比差距 (Percentage difference: (owned - target) / target * 100)"
-    )
-
-    z_score: float = Field(
-        description="Z分数 (Z-score: (owned - target) / std)"
-    )
-
-    p_value: float = Field(
-        description="P值 (P-value from two-tailed test)",
-        ge=0.0,
-        le=1.0
-    )
-
-    significance: str = Field(
-        description="显著性水平: critical | very_significant | significant | marginal | none | undefined"
-    )
-
-    interpretation: str = Field(
-        description="人类可读的解释 (Human-readable interpretation of the gap)"
-    )
-
-    priority_rank: int = Field(
-        description="优先级排名 (1-based ranking, 1 is highest priority)",
-        gt=0
-    )
-
-    # Feature attribution (from attribution.py)
-    related_features: List[str] = Field(
-        description="影响该指标的相关特征 (Features that affect this metric, from attribution.py)"
-    )
-
-    rationale: str = Field(
-        description="特征归因理由 (Rationale explaining why these features affect the metric)"
-    )
-
-    # Feature mapping results
-    missing_features: List[str] = Field(
-        description="缺失的关键特征 (Features absent in owned_note but present in success profile)"
-    )
-
-    weak_features: List[str] = Field(
-        description="执行不足的特征 (Features present but poorly executed)"
-    )
-
-    # Narrative
-    gap_explanation: str = Field(
-        description="差距原因解释 (Why this gap exists, 2-3 sentences, 50-200 chars)",
-        min_length=10,
-        max_length=200
-    )
-
-    recommendation_summary: str = Field(
-        description="改进建议摘要 (What to improve, 1-2 sentences, 20-100 chars)",
-        min_length=20,
-        max_length=100
-    )
-
-    @field_validator('significance')
-    @classmethod
-    def validate_significance(cls, v: str) -> str:
-        """Validate significance is one of allowed values."""
-        allowed = {'critical', 'very_significant', 'significant', 'marginal', 'none', 'undefined'}
-        if v not in allowed:
-            raise ValueError(f"significance must be one of {allowed}, got '{v}'")
-        return v
-
-    @model_validator(mode='before')
-    @classmethod
-    def convert_null_lists_to_empty(cls, data: Any) -> Any:
-        """Convert null/None values to empty lists for List[str] fields."""
-        if isinstance(data, dict):
-            list_fields = ['related_features', 'missing_features', 'weak_features']
-            for field in list_fields:
-                if field in data and data[field] is None:
-                    data[field] = []
-        return data
-
-
 class GapReport(BaseModel):
     """差距分析报告 (Gap analysis report).
 
@@ -553,16 +450,18 @@ class GapReport(BaseModel):
         description="自有笔记ID (Owned note ID)"
     )
 
-    # Statistical gap analysis
-    significant_gaps: List[MetricGap] = Field(
+    # Statistical gap analysis (uses UnifiedGap from analysis_results)
+    significant_gaps: List[UnifiedGap] = Field(
         description="显著性差距列表 (p < 0.05), ordered by priority_rank"
     )
 
-    marginal_gaps: List[MetricGap] = Field(
+    marginal_gaps: List[UnifiedGap] = Field(
+        default_factory=list,
         description="边缘显著差距列表 (0.05 <= p < 0.10)"
     )
 
-    non_significant_gaps: List[MetricGap] = Field(
+    non_significant_gaps: List[UnifiedGap] = Field(
+        default_factory=list,
         description="非显著差距列表 (p >= 0.10)"
     )
 

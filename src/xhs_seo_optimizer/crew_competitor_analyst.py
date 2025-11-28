@@ -8,6 +8,7 @@ from crewai import Agent, Crew, Task, Process, LLM
 from crewai.project import CrewBase, agent, crew, task, before_kickoff
 from typing import Dict, Any
 import os
+import json
 
 from xhs_seo_optimizer.models.reports import SuccessProfileReport
 from xhs_seo_optimizer.tools import (
@@ -15,6 +16,7 @@ from xhs_seo_optimizer.tools import (
     MultiModalVisionTool,
     NLPAnalysisTool,
 )
+from xhs_seo_optimizer.utils import format_json_output
 
 
 @CrewBase
@@ -42,11 +44,16 @@ class XhsSeoOptimizerCrewCompetitorAnalyst:
         if proxy:
             print(f"使用代理 (通过环境变量): {proxy}")
 
-        # LLM configuration for OpenRouter
+        # LLM configuration for OpenRouter with retry
+        # Try Gemini native JSON mode via extra_body
         llm_config = {
             'base_url': 'https://openrouter.ai/api/v1',
             'api_key': os.getenv("OPENROUTER_API_KEY", ""),
-            'temperature': 0.1
+            'temperature': 0.1,
+            'num_retries': 3,  # LiteLLM auto-retry on API errors
+            'extra_body': {
+                'response_mime_type': 'application/json',  # Gemini native JSON mode
+            },
         }
 
         self.custom_llm = LLM(
@@ -54,11 +61,16 @@ class XhsSeoOptimizerCrewCompetitorAnalyst:
             **llm_config
         )
 
+        # Function LLM without JSON mode (for function calling)
+        function_llm_config = {
+            'base_url': 'https://openrouter.ai/api/v1',
+            'api_key': os.getenv("OPENROUTER_API_KEY", ""),
+            'temperature': 0.1,
+            'num_retries': 3,
+        }
         self.fuction_llm = LLM(
             model='openrouter/deepseek/deepseek-r1-0528',
-            **llm_config
-
-
+            **function_llm_config
         )
 
     @before_kickoff
@@ -117,6 +129,12 @@ class XhsSeoOptimizerCrewCompetitorAnalyst:
         from xhs_seo_optimizer.shared_context import shared_context
         shared_context.set("target_notes_data", target_notes_data)
         shared_context.set("target_notes_count", len(target_notes))
+
+        # Extract note_ids for YAML template substitution
+        # This prevents agent from hallucinating fake IDs like "note_1"
+        note_ids = [note.get('note_id') for note in target_notes_data]
+        # Format as simple comma-separated list (YAML-safe, no special characters)
+        inputs["target_note_ids_list"] = ", ".join(f'"{nid}"' for nid in note_ids)
 
         # Also store in inputs for metadata and variable substitution in YAML
         inputs["target_notes_data"] = target_notes_data
@@ -198,7 +216,9 @@ class XhsSeoOptimizerCrewCompetitorAnalyst:
                 self.aggregate_statistics_task(),  # Needs aggregated_stats
                 self.analyze_metrics_task()        # Needs metric_profiles
             ],
-            output_pydantic=SuccessProfileReport  # Final output validation
+            output_pydantic=SuccessProfileReport,  # Final output validation
+            guardrails=[format_json_output],  # Extract JSON from markdown/prefix
+            guardrail_max_retries=2
         )
 
     @crew

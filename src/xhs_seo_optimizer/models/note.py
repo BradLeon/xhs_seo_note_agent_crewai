@@ -12,30 +12,23 @@ from pydantic import BaseModel, Field, HttpUrl
 
 
 class NoteMetaData(BaseModel):
-    """笔记元数据 (Note metadata)."""
+    """笔记元数据 (Note metadata).
 
-    note_id: str = Field(description="笔记ID")
+    Note: note_id is at the top level of Note, not inside meta_data.
+    """
+
     title: str = Field(description="笔记标题")
     content: str = Field(description="笔记正文内容")
     cover_image_url: str = Field(description="封面图片URL")
     inner_image_urls: Optional[List[str]] = Field(default=None, description="内页图片URLs (图文笔记)")
-    video_url: Optional[str] = Field(default=None, description="视频URL (视频笔记)")
-    nickname: Optional[str] = Field(default=None, description="作者昵称")
-
-    # Platform statistics
-    likes: Optional[int] = Field(default=None, description="点赞数")
-    collects: Optional[int] = Field(default=None, description="收藏数")
-    comments: Optional[int] = Field(default=None, description="评论数")
-    shares: Optional[int] = Field(default=None, description="转发数")
 
 
 class NotePrediction(BaseModel):
     """笔记预测指标 (Note prediction metrics).
 
     Performance predictions from content scoring models.
+    Note: note_id is at the top level of Note, not inside prediction.
     """
-
-    note_id: str = Field(description="笔记ID")
 
     # Primary metrics
     sort_score2: float = Field(description="平台优先级排序分数 (黑盒算法)", alias="sortScore")
@@ -80,47 +73,23 @@ class Note(BaseModel):
     """完整笔记模型 (Complete note model).
 
     Combines meta_data, prediction, and tag for a complete note representation.
+
+    Standard JSON format:
+        {
+            "note_id": "xxx",
+            "meta_data": {"title": "...", "content": "...", ...},
+            "prediction": {"ctr": 0.1, ...},
+            "tag": {"intention_lv1": "...", ...}
+        }
+
+    Usage:
+        >>> note = Note(**json_data)  # Direct Pydantic parsing
     """
 
     note_id: str = Field(description="笔记ID")
     meta_data: NoteMetaData = Field(description="笔记元数据")
     prediction: NotePrediction = Field(description="性能预测指标")
     tag: NoteTag = Field(description="平台标签")
-
-    @classmethod
-    def from_json(cls, data: dict) -> "Note":
-        """从JSON数据创建Note实例 (Create Note instance from JSON data).
-
-        Args:
-            data: JSON dict with note_id, title, content, prediction, tag, etc.
-
-        Returns:
-            Note instance
-
-        Example:
-            >>> import json
-            >>> with open('docs/owned_note.json') as f:
-            ...     note_data = json.load(f)
-            >>> note = Note.from_json(note_data)
-        """
-        return cls(
-            note_id=data["note_id"],
-            meta_data=NoteMetaData(
-                note_id=data["note_id"],
-                title=data["title"],
-                content=data["content"],
-                cover_image_url=data.get("cover_image_url", ""),
-                inner_image_urls=data.get("inner_image_urls"),
-                video_url=data.get("video_url"),
-                nickname=data.get("nickname"),
-                likes=data.get("likes"),
-                collects=data.get("collects"),
-                comments=data.get("comments"),
-                shares=data.get("shares"),
-            ),
-            prediction=NotePrediction(**data["prediction"]),
-            tag=NoteTag(**data["tag"]),
-        )
 
 
 class ComplexInput(BaseModel):

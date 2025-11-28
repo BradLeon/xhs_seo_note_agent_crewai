@@ -7,6 +7,7 @@ Supports multi-image analysis (cover image + inner images).
 import os
 import json
 import logging
+import time
 from typing import Any, Dict, List, Optional
 from openai import OpenAI
 from crewai.tools import BaseTool
@@ -89,6 +90,12 @@ class MultiModalVisionTool(BaseTool):
     # Image limits
     max_inner_images: int = Field(default=4, description="最多分析的内页图数量")
 
+    # Rate limiting
+    request_delay: float = Field(
+        default=2.0,
+        description="API 请求间隔时间(秒)，防止触发速率限制"
+    )
+
     def _run(
         self,
         note_id: Optional[str] = None,
@@ -123,29 +130,18 @@ class MultiModalVisionTool(BaseTool):
             logger.info(f"Smart mode: Fetching metadata for note_id={note_id} from shared_context")
 
             from xhs_seo_optimizer.shared_context import shared_context
-            # Support both target_notes_data (CompetitorAnalyst) and owned_note_data (OwnedNoteAuditor)
-            notes = shared_context.get("target_notes_data", [])
-            if not notes:
-                # Try owned_note_data (single note)
-                owned_note = shared_context.get("owned_note_data")
-                if owned_note:
-                    notes = [owned_note]
+            # Combine both target_notes_data (CompetitorAnalyst) and owned_note_data (OwnedNoteAuditor)
+            # Must search BOTH since crews may run in parallel and both datasets exist
+            notes = list(shared_context.get("target_notes_data", []))  # Copy to avoid mutation
+            owned_note = shared_context.get("owned_note_data")
+            if owned_note:
+                notes.append(owned_note)
 
             # Find the note by note_id
             for note in notes:
                 if note.get('note_id') == note_id:
-                    # Support both nested (meta_data) and flat structure
-                    if 'meta_data' in note:
-                        note_metadata = note.get('meta_data')
-                    else:
-                        # Flat structure - create meta_data from top-level fields
-                        note_metadata = {
-                            'note_id': note.get('note_id'),
-                            'title': note.get('title', ''),
-                            'content': note.get('content', ''),
-                            'cover_image_url': note.get('cover_image_url', ''),
-                            'inner_image_urls': note.get('inner_image_urls', []),
-                        }
+                    # Standard format: note_id at top level, meta_data as nested object
+                    note_metadata = note.get('meta_data')
                     logger.info(f"✓ Found note metadata for {note_id}")
                     break
 
@@ -210,6 +206,11 @@ class MultiModalVisionTool(BaseTool):
         Raises:
             RuntimeError: If API call fails
         """
+        # Rate limiting: wait before making API request
+        if self.request_delay > 0:
+            logger.info(f"⏳ Rate limiting: waiting {self.request_delay}s before API call...")
+            time.sleep(self.request_delay)
+
         # Initialize OpenRouter client
         client = OpenAI(
             base_url="https://openrouter.ai/api/v1",
@@ -293,6 +294,8 @@ class MultiModalVisionTool(BaseTool):
     4. **图内文字分析**：
        - 通过OCR能力识别图中文字内容
        - 特别是文字大小和颜色的差异突出的视觉重点文字
+       - **重要**: OCR内容最多输出500字符，如果过长请截断
+       - 避免重复输出相同文字内容
 
     5. **用户体验分析**：
        - 封面图对于用户停留点击的吸引力
@@ -494,8 +497,17 @@ class MultiModalVisionTool(BaseTool):
                 else:
                     result[field] = value
 
-            # Add detailed analysis
-            result["detailed_analysis"] = content
+            # Truncate OCR content to prevent Gemini hallucination (e.g., "10 Kinderbetten" repeated)
+            MAX_OCR_LENGTH = 500
+            for field in ['text_ocr_content', 'text_ocr_content_highlight']:
+                if field in result and isinstance(result[field], str):
+                    if len(result[field]) > MAX_OCR_LENGTH:
+                        result[field] = result[field][:MAX_OCR_LENGTH] + '...(截断)'
+                        logger.info(f"⚠️ OCR content truncated: {field} exceeded {MAX_OCR_LENGTH} chars")
+
+            # Remove detailed_analysis to prevent LLM from extracting untruncated OCR content
+            # The structured fields above contain all necessary information
+            # result["detailed_analysis"] = content  # Removed to reduce context pollution
 
             return result
 

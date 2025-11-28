@@ -158,7 +158,17 @@ generate_audit_report:
   description: |
     **任务目标**: 生成客观的自营笔记审计报告 (Phase 0001 更新版)
 
-    基于上游任务的结果，创建完整的 AuditReport，包含内容意图和视觉主体信息。
+    ⚠️ **重要约束 - 必须遵守**:
+    - ❌ 禁止调用任何工具 (nlp_text_analysis, multimodal_vision_analysis 等)
+    - ❌ 禁止自己重新分析笔记内容
+    - ✅ 必须使用上游任务已经生成的数据 (从 context 中获取)
+    - ✅ 你的唯一任务是整合上游数据并格式化输出 JSON
+
+    **数据来源** (全部来自上游任务的 context，不需要重新获取):
+    - Task 1 (extract_content_features) 已在 context 中提供: text_features, visual_features
+    - Task 2 (extract_content_intent) 已在 context 中提供: content_intent
+    - Task 3 (extract_visual_subjects) 已在 context 中提供: visual_subjects
+    - 系统变量已提供: current_metrics, marketing_level, is_soft_ad, marketing_sensitivity
 
     **执行步骤**:
 
@@ -166,9 +176,9 @@ generate_audit_report:
        - note_id: {note_id}
        - keyword: {keyword}
 
-    2. 收集分析结果 (from Task 1: extract_content_features):
-       - text_features: TextAnalysisResult
-       - visual_features: VisionAnalysisResult
+    2. 从 context 中获取分析结果 (from Task 1: extract_content_features):
+       - text_features: TextAnalysisResult (已有，直接使用)
+       - visual_features: VisionAnalysisResult (已有，直接使用)
 
     3. 收集当前指标 (current_metrics):
        - 直接使用以下 JSON 字符串（已格式化，直接复制即可）:
@@ -232,15 +242,31 @@ generate_audit_report:
     - ❌ 不要生成"优化建议"（那是 OptimizationStrategist 的职责）
     - ✅ 只做客观的内容理解和特征提取
 
-    **输出格式要求（严格执行）**:
-    - ⚠️ 只输出 JSON，不要有任何额外文字或解释
-    - ⚠️ 不要使用 markdown 代码块 (```json)
+    **输出格式要求（严格执行 - 违反任何一条都会导致解析失败）**:
+    - ⚠️ 第一个字符必须是 `{`，最后一个字符必须是 `}`
+    - ⚠️ 不要有任何前置文字（如 "Final Answer:", "Looks good", "Here is the JSON"）
+    - ⚠️ 不要有任何思考过程或解释
+    - ⚠️ 不要使用 markdown 代码块 (```json ... ```)
+    - ⚠️ 不要在 JSON 后面添加任何文字
     - ⚠️ JSON 必须完整且格式正确，不能有语法错误
     - ⚠️ 不要在最后一个字段后添加逗号 (trailing comma)
     - ⚠️ 所有字符串必须正确转义（如引号、换行符）
-    - ✅ 直接输出符合 AuditReport schema 的单个 JSON 对象
-    - ✅ 使用标准 JSON 格式（RFC 8259），不使用 JSON5 或其他扩展
+    - ✅ 直接输出纯 JSON 对象，无任何包装
+    - ✅ 使用标准 JSON 格式（RFC 8259）
 
-  expected_output: "A single valid JSON object conforming to AuditReport schema with content_intent and visual_subjects (no additional text or markdown)"
+    **错误示例** (不要这样做):
+    ```
+    Final Answer: {"note_id": ...}          ❌ 有前置文字
+    Looks good. {"note_id": ...}            ❌ 有前置文字
+    ```json\n{"note_id": ...}\n```          ❌ 使用了 markdown
+    {"note_id": ...} Done!                  ❌ 有后置文字
+    ```
+
+    **正确示例** (必须这样做):
+    ```
+    {"note_id": "xxx", "keyword": "xxx", ...}
+    ```
+
+  expected_output: "A single valid JSON object conforming to AuditReport schema. MUST start with { and end with }. No markdown, no prefix text, no suffix text."
   agent: owned_note_auditor
   output_file: "outputs/audit_report.json"

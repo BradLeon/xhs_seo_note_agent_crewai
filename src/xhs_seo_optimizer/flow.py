@@ -1,20 +1,19 @@
 """XHS SEO Optimizer Flow - CrewAI Flow 编排器.
 
 Orchestrates the 4 crews (CompetitorAnalyst, OwnedNoteAuditor, GapFinder,
-OptimizationStrategist) using CrewAI Flow for parallel execution and
+OptimizationStrategist) using CrewAI Flow for sequential execution and
 state management.
 
-Architecture:
+Architecture (Sequential to avoid API rate limiting):
     @start() receive_inputs
               |
-    +---------+---------+
-    |                   |
-    v                   v
-analyze_competitors  audit_owned_note  (parallel)
-    |                   |
-    +---------+---------+
+              v
+    analyze_competitors
               |
-              v (and_)
+              v
+      audit_owned_note
+              |
+              v
          find_gaps
               |
               v
@@ -22,12 +21,14 @@ analyze_competitors  audit_owned_note  (parallel)
               |
               v
        compile_results
+
+Note: API retry is handled by LiteLLM (num_retries=3 in crew LLM configs).
 """
 
 from datetime import datetime, timezone
 from typing import Any
 
-from crewai.flow.flow import Flow, listen, start, and_
+from crewai.flow.flow import Flow, listen, start
 
 from xhs_seo_optimizer.flow_state import XhsSeoFlowState
 from xhs_seo_optimizer.crew_competitor_analyst import XhsSeoOptimizerCrewCompetitorAnalyst
@@ -39,10 +40,11 @@ from xhs_seo_optimizer.crew_optimization import XhsSeoOptimizerCrewOptimization
 class XhsSeoOptimizerFlow(Flow[XhsSeoFlowState]):
     """CrewAI Flow for XHS SEO optimization pipeline.
 
-    Orchestrates 4 crews with parallel execution where possible:
-    1. CompetitorAnalyst + OwnedNoteAuditor (parallel)
-    2. GapFinder (joins parallel results)
-    3. OptimizationStrategist (sequential)
+    Orchestrates 4 crews in sequential execution to avoid API rate limiting:
+    1. CompetitorAnalyst
+    2. OwnedNoteAuditor
+    3. GapFinder
+    4. OptimizationStrategist
 
     Usage:
         flow = XhsSeoOptimizerFlow()
@@ -86,12 +88,12 @@ class XhsSeoOptimizerFlow(Flow[XhsSeoFlowState]):
         return self.state
 
     # =========================================================================
-    # Parallel Phase - CompetitorAnalyst & OwnedNoteAuditor
+    # Sequential Phase 1 - CompetitorAnalyst
     # =========================================================================
 
     @listen(receive_inputs)
     def analyze_competitors(self) -> Any:
-        """Phase 1A: Analyze competitor notes (parallel with audit_owned_note).
+        """Phase 1: Analyze competitor notes.
 
         Runs CompetitorAnalyst crew to extract success patterns from target_notes.
 
@@ -102,6 +104,8 @@ class XhsSeoOptimizerFlow(Flow[XhsSeoFlowState]):
 
         try:
             crew = XhsSeoOptimizerCrewCompetitorAnalyst()
+
+            # API retry is handled by LiteLLM (num_retries=3 in crew LLM configs)
             result = crew.crew().kickoff(inputs={
                 "target_notes": self.state.target_notes,
                 "keyword": self.state.keyword,
@@ -123,19 +127,27 @@ class XhsSeoOptimizerFlow(Flow[XhsSeoFlowState]):
 
         return self.state.success_profile_report
 
-    @listen(receive_inputs)
+    # =========================================================================
+    # Sequential Phase 2 - OwnedNoteAuditor
+    # =========================================================================
+
+    @listen(analyze_competitors)
     def audit_owned_note(self) -> Any:
-        """Phase 1B: Audit owned note (parallel with analyze_competitors).
+        """Phase 2: Audit owned note (after CompetitorAnalyst).
 
         Runs OwnedNoteAuditor crew to analyze the client's note.
 
         Returns:
             AuditReport from OwnedNoteAuditor crew
         """
+        print("\n" + "-" * 60)
         print("[Flow] Starting OwnedNoteAuditor crew...")
+        print("-" * 60)
 
         try:
             crew = XhsSeoOptimizerCrewOwnedNote()
+
+            # API retry is handled by LiteLLM (num_retries=3 in crew LLM configs)
             result = crew.crew().kickoff(inputs={
                 "owned_note": self.state.owned_note,
                 "keyword": self.state.keyword,
@@ -157,32 +169,33 @@ class XhsSeoOptimizerFlow(Flow[XhsSeoFlowState]):
         return self.state.audit_report
 
     # =========================================================================
-    # Join Phase - GapFinder
+    # Sequential Phase 3 - GapFinder
     # =========================================================================
 
-    @listen(and_(analyze_competitors, audit_owned_note))
+    @listen(audit_owned_note)
     def find_gaps(self) -> Any:
-        """Phase 2: Find gaps (after BOTH parallel crews complete).
+        """Phase 3: Find gaps (after OwnedNoteAuditor).
 
-        Uses and_() to wait for both analyze_competitors AND audit_owned_note.
         Runs GapFinder crew to identify performance gaps.
 
         Returns:
             GapReport from GapFinder crew
         """
         print("\n" + "-" * 60)
-        print("[Flow] Both Phase 1 crews completed. Starting GapFinder...")
+        print("[Flow] Starting GapFinder crew...")
         print("-" * 60)
 
-        # Check if parallel phase completed successfully
+        # Check if previous phases completed successfully
         if not self.state.is_parallel_phase_complete():
-            error_msg = "Cannot run GapFinder: missing parallel phase outputs"
+            error_msg = "Cannot run GapFinder: missing SuccessProfileReport or AuditReport"
             print(f"[Flow] Error: {error_msg}")
             self.state.add_error(error_msg)
             return None
 
         try:
             crew = XhsSeoOptimizerCrewGapFinder()
+
+            # API retry is handled by LiteLLM (num_retries=3 in crew LLM configs)
             result = crew.crew().kickoff(inputs={
                 "success_profile_report": self.state.success_profile_report.model_dump(),
                 "audit_report": self.state.audit_report.model_dump(),
@@ -204,12 +217,12 @@ class XhsSeoOptimizerFlow(Flow[XhsSeoFlowState]):
         return self.state.gap_report
 
     # =========================================================================
-    # Sequential Phase - OptimizationStrategist
+    # Sequential Phase 4 - OptimizationStrategist
     # =========================================================================
 
     @listen(find_gaps)
     def generate_optimization(self) -> Any:
-        """Phase 3: Generate optimization plan and images.
+        """Phase 4: Generate optimization plan and images.
 
         Runs OptimizationStrategist crew to create the optimized note.
 
@@ -229,6 +242,8 @@ class XhsSeoOptimizerFlow(Flow[XhsSeoFlowState]):
 
         try:
             crew = XhsSeoOptimizerCrewOptimization()
+
+            # API retry is handled by LiteLLM (num_retries=3 in crew LLM configs)
             result = crew.crew().kickoff(inputs={
                 "keyword": self.state.keyword,
                 "gap_report": self.state.gap_report.model_dump(),
@@ -252,12 +267,12 @@ class XhsSeoOptimizerFlow(Flow[XhsSeoFlowState]):
         return self.state.optimized_note
 
     # =========================================================================
-    # Final Phase - Compile Results
+    # Final Phase 5 - Compile Results
     # =========================================================================
 
     @listen(generate_optimization)
     def compile_results(self) -> XhsSeoFlowState:
-        """Phase 4: Finalize and return results.
+        """Phase 5: Finalize and return results.
 
         Records completion time and logs summary.
 

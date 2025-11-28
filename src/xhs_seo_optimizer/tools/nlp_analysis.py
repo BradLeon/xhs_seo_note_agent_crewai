@@ -6,10 +6,14 @@ Deep content structure analysis including title, opening, content, ending strate
 
 import os
 import json
+import time
+import logging
 from typing import Any, Dict, Optional
 from openai import OpenAI
 from crewai.tools import BaseTool
 from pydantic import Field, ConfigDict, BaseModel
+
+logger = logging.getLogger(__name__)
 
 from ..models.analysis_results import TextAnalysisResult
 from ..models.note import NoteMetaData
@@ -81,6 +85,12 @@ class NLPAnalysisTool(BaseTool):
         default_factory=lambda: os.getenv("OPENROUTER_SITE_NAME", "XHS SEO Optimizer")
     )
 
+    # Rate limiting
+    request_delay: float = Field(
+        default=2.0,
+        description="API 请求间隔时间(秒)，防止触发速率限制"
+    )
+
     def _run(
         self,
         note_id: Optional[str] = None,
@@ -117,29 +127,18 @@ class NLPAnalysisTool(BaseTool):
             logger.info(f"Smart mode: Fetching metadata for note_id={note_id} from shared_context")
 
             from xhs_seo_optimizer.shared_context import shared_context
-            # Support both target_notes_data (CompetitorAnalyst) and owned_note_data (OwnedNoteAuditor)
-            notes = shared_context.get("target_notes_data", [])
-            if not notes:
-                # Try owned_note_data (single note)
-                owned_note = shared_context.get("owned_note_data")
-                if owned_note:
-                    notes = [owned_note]
+            # Combine both target_notes_data (CompetitorAnalyst) and owned_note_data (OwnedNoteAuditor)
+            # Must search BOTH since crews may run in parallel and both datasets exist
+            notes = list(shared_context.get("target_notes_data", []))  # Copy to avoid mutation
+            owned_note = shared_context.get("owned_note_data")
+            if owned_note:
+                notes.append(owned_note)
 
             # Find the note by note_id
             for note in notes:
                 if note.get('note_id') == note_id:
-                    # Support both nested (meta_data) and flat structure
-                    if 'meta_data' in note:
-                        note_metadata = note.get('meta_data')
-                    else:
-                        # Flat structure - create meta_data from top-level fields
-                        note_metadata = {
-                            'note_id': note.get('note_id'),
-                            'title': note.get('title', ''),
-                            'content': note.get('content', ''),
-                            'cover_image_url': note.get('cover_image_url', ''),
-                            'inner_image_urls': note.get('inner_image_urls', []),
-                        }
+                    # Standard format: note_id at top level, meta_data as nested object
+                    note_metadata = note.get('meta_data')
                     logger.info(f"✓ Found note metadata for {note_id}")
                     break
 
@@ -188,6 +187,11 @@ class NLPAnalysisTool(BaseTool):
         Raises:
             RuntimeError: If API call fails
         """
+        # Rate limiting: wait before making API request
+        if self.request_delay > 0:
+            logger.info(f"⏳ Rate limiting: waiting {self.request_delay}s before API call...")
+            time.sleep(self.request_delay)
+
         # Initialize OpenRouter client
         client = OpenAI(
             base_url="https://openrouter.ai/api/v1",

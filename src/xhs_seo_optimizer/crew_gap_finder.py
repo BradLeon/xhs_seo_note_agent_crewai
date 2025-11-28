@@ -4,7 +4,7 @@ Identifies statistically significant performance gaps between owned_note and tar
 then maps gaps to actionable content features.
 """
 
-from crewai import Agent, Crew, Task
+from crewai import Agent, Crew, Task, LLM
 from crewai.project import CrewBase, agent, task, crew, before_kickoff
 from typing import Any, Dict
 import json
@@ -12,11 +12,8 @@ import os
 
 from .tools.statistical_delta import StatisticalDeltaTool
 from .models.reports import GapReport
-from .models.analysis_results import (
-    GapAnalysis,
-    FeatureMappedGapAnalysis,
-    PrioritizedGapAnalysis
-)
+from .models.analysis_results import GapAnalysis
+from .utils import format_json_output
 
 
 @CrewBase
@@ -34,6 +31,21 @@ class XhsSeoOptimizerCrewGapFinder:
         """Initialize Gap Finder crew."""
         self.shared_context = {}
 
+        # LLM configuration for OpenRouter with retry
+        # Note: response_format not supported for OpenRouter provider
+        # Rely on guardrails + output_pydantic for JSON validation
+        llm_config = {
+            'base_url': 'https://openrouter.ai/api/v1',
+            'api_key': os.getenv("OPENROUTER_API_KEY", ""),
+            'temperature': 0.1,
+            'num_retries': 3,  # LiteLLM auto-retry on API errors
+        }
+
+        self.custom_llm = LLM(
+            model='openrouter/google/gemini-2.5-flash-lite',
+            **llm_config
+        )
+
     @agent
     def gap_finder(self) -> Agent:
         """差距定位员 agent.
@@ -44,6 +56,7 @@ class XhsSeoOptimizerCrewGapFinder:
         return Agent(
             config=self.agents_config['gap_finder'],
             tools=[StatisticalDeltaTool()],
+            llm=self.custom_llm,
             verbose=True,
             allow_delegation=False
         )
@@ -58,52 +71,25 @@ class XhsSeoOptimizerCrewGapFinder:
         return Task(
             config=self.tasks_config['calculate_statistical_gaps'],
             agent=self.gap_finder(),
-            output_pydantic=GapAnalysis  # Enforce output schema
-        )
-
-    @task
-    def map_gaps_to_features(self) -> Task:
-        """Task 2: Map metric gaps to missing/weak features.
-
-        Output: FeatureMappedGapAnalysis with missing_features, weak_features,
-        gap_explanation, and recommendation_summary for each gap.
-        """
-        return Task(
-            config=self.tasks_config['map_gaps_to_features'],
-            agent=self.gap_finder(),
-            context=[self.calculate_statistical_gaps()],
-            output_pydantic=FeatureMappedGapAnalysis  # Enforce output schema
-        )
-
-    @task
-    def prioritize_gaps(self) -> Task:
-        """Task 3: Prioritize gaps and identify root causes.
-
-        Output: PrioritizedGapAnalysis with top_priority_metrics, root_causes,
-        and impact_summary.
-        """
-        return Task(
-            config=self.tasks_config['prioritize_gaps'],
-            agent=self.gap_finder(),
-            context=[self.calculate_statistical_gaps(), self.map_gaps_to_features()],
-            output_pydantic=PrioritizedGapAnalysis  # Enforce output schema
+            output_pydantic=GapAnalysis,  # Enforce output schema
+            guardrails=[format_json_output],  # Extract JSON from trailing text
+            guardrail_max_retries=2
         )
 
     @task
     def generate_gap_report(self) -> Task:
-        """Task 4: Generate final GapReport JSON.
+        """Task 2: Generate final GapReport JSON.
 
+        Merges feature mapping, prioritization, and report generation into one task.
         Output: GapReport conforming to the final report schema with all metadata.
         """
         return Task(
             config=self.tasks_config['generate_gap_report'],
             agent=self.gap_finder(),
-            context=[
-                self.calculate_statistical_gaps(),
-                self.map_gaps_to_features(),
-                self.prioritize_gaps()
-            ],
-            output_pydantic=GapReport  # Final output validation
+            context=[self.calculate_statistical_gaps()],
+            output_pydantic=GapReport,  # Final output validation
+            guardrails=[format_json_output],  # Extract JSON from markdown/duplicate outputs
+            guardrail_max_retries=2
         )
 
     @crew

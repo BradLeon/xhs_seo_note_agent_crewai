@@ -40,11 +40,11 @@ class VisionAnalysisResult(BaseModel):
     # 图内文字分析 (OCR Text Analysis)
     text_ocr_content: Optional[str] = Field(
         default=None,
-        description="OCR识别的图中文字内容 (图片可能没有文字)"
+        description="OCR识别的图中文字内容 (图片可能没有文字, 最大500字符)"
     )
     text_ocr_content_highlight: Optional[str] = Field(
         default=None,
-        description="OCR识别中突出的视觉重点文字 (图片可能没有文字)"
+        description="OCR识别中突出的视觉重点文字 (图片可能没有文字, 最大500字符)"
     )
 
     # 用户体验分析 (User Experience Analysis)
@@ -66,11 +66,22 @@ class VisionAnalysisResult(BaseModel):
         description="个人风格特点"
     )
 
-    # 详细分析 (Optional)
-    detailed_analysis: Optional[str] = Field(
-        default=None,
-        description="详细分析说明 (from LLM)"
-    )
+    # 详细分析 (Optional) - Removed to prevent context pollution
+    # detailed_analysis: Optional[str] = Field(
+    #     default=None,
+    #     description="详细分析说明 (from LLM)"
+    # )
+
+    @field_validator('text_ocr_content', 'text_ocr_content_highlight', mode='before')
+    @classmethod
+    def truncate_ocr_content(cls, v: Optional[str]) -> Optional[str]:
+        """Truncate OCR content to prevent LLM hallucination with repeated text."""
+        if v is None:
+            return v
+        MAX_OCR_LENGTH = 500
+        if isinstance(v, str) and len(v) > MAX_OCR_LENGTH:
+            return v[:MAX_OCR_LENGTH] + '...(截断)'
+        return v
 
 
 class TextAnalysisResult(BaseModel):
@@ -202,25 +213,36 @@ class AggregatedMetrics(BaseModel):
     outliers_removed: int = Field(description="移除的异常值数量 (Number of outliers excluded)")
 
 
-class Gap(BaseModel):
-    """单个指标的差距分析 (Statistical gap analysis for a single metric).
+class UnifiedGap(BaseModel):
+    """统一的差距分析模型 (Unified gap analysis model).
 
-    Represents the difference between owned_note and target_notes for one metric.
+    支持渐进式字段填充:
+    - Task 1 (StatisticalDeltaTool): 填充核心统计字段
+    - Task 2 (LLM): 填充特征映射和叙述字段
     """
 
+    # 核心统计字段 (Task 1 by StatisticalDeltaTool)
     metric: str = Field(description="指标名称 (Metric name)")
-    owned_value: Optional[float] = Field(description="客户笔记的值 (Owned note value)")
+    owned_value: Optional[float] = Field(
+        default=None,
+        description="客户笔记的值 (Owned note value)"
+    )
     target_mean: float = Field(description="目标笔记均值 (Target notes mean)")
     target_std: float = Field(description="目标笔记标准差 (Target notes std dev)")
     delta_absolute: float = Field(description="绝对差值 (Absolute difference)")
     delta_pct: float = Field(description="百分比差值 (Percentage difference)")
     z_score: float = Field(description="Z分数 (Z-score)")
-    p_value: float = Field(description="P值 (P-value)")
+    p_value: float = Field(
+        description="P值 (P-value)",
+        ge=0.0,
+        le=1.0
+    )
     significance: str = Field(
-        description="显著性级别 (Significance level): critical | very_significant | significant | marginal | none | undefined"
+        description="显著性级别: critical | very_significant | significant | marginal | none | undefined"
     )
     interpretation: str = Field(description="人类可读的解释 (Human-readable interpretation)")
-    # Attribution fields (populated from attribution.py)
+
+    # 特征归因字段 (Task 1 by StatisticalDeltaTool from attribution.py)
     related_features: List[str] = Field(
         default_factory=list,
         description="影响该指标的相关特征列表 (Features that influence this metric)"
@@ -230,87 +252,39 @@ class Gap(BaseModel):
         description="特征归因理由 (Rationale explaining why these features affect the metric)"
     )
 
-
-class GapAnalysis(BaseModel):
-    """客户笔记与目标笔记间的差距分析 (Gap analysis between owned and target notes).
-
-    Output from StatisticalDeltaTool (Task 1: calculate_statistical_gaps).
-    Used by GapFinder to prioritize optimization opportunities.
-    """
-
-    significant_gaps: List[Gap] = Field(
-        description="显著差距列表 (Gaps with p < 0.05, sorted by priority)"
-    )
-    marginal_gaps: List[Gap] = Field(
-        default_factory=list,
-        description="边缘显著差距列表 (Gaps with 0.05 <= p < 0.10)"
-    )
-    non_significant_gaps: List[Gap] = Field(
-        description="非显著差距列表 (Gaps with p >= 0.10, for completeness)"
-    )
-    priority_order: List[str] = Field(
-        description="按优先级排序的指标名称 (Metric names sorted by priority)"
-    )
-    sample_size: int = Field(description="使用的目标笔记数量 (Number of target notes used)")
-
-    @model_validator(mode='before')
-    @classmethod
-    def convert_null_lists_to_empty(cls, data: Any) -> Any:
-        """Convert null/None values to empty lists for List fields."""
-        if isinstance(data, dict):
-            list_fields = ['significant_gaps', 'marginal_gaps', 'non_significant_gaps', 'priority_order']
-            for field in list_fields:
-                if field in data and data[field] is None:
-                    data[field] = []
-        return data
-
-
-class FeatureMappedGap(BaseModel):
-    """特征映射后的差距分析 (Gap with feature attribution).
-
-    Output from Task 2: map_gaps_to_features.
-    Extends Gap with missing/weak feature identification and narrative.
-    """
-
-    # Core statistical fields (from Gap)
-    metric: str = Field(description="指标名称 (Metric name)")
-    owned_value: Optional[float] = Field(description="客户笔记的值 (Owned note value)")
-    target_mean: float = Field(description="目标笔记均值 (Target notes mean)")
-    target_std: float = Field(description="目标笔记标准差 (Target notes std dev)")
-    delta_absolute: float = Field(description="绝对差值 (Absolute difference)")
-    delta_pct: float = Field(description="百分比差值 (Percentage difference)")
-    z_score: float = Field(description="Z分数 (Z-score)")
-    p_value: float = Field(description="P值 (P-value)", ge=0.0, le=1.0)
-    significance: str = Field(
-        description="显著性级别: critical | very_significant | significant | marginal | none | undefined"
-    )
-    interpretation: str = Field(description="人类可读的解释 (Human-readable interpretation)")
-
-    # Attribution fields (from StatisticalDeltaTool)
-    related_features: List[str] = Field(
-        description="影响该指标的相关特征列表 (Features that influence this metric)"
-    )
-    rationale: str = Field(
-        description="特征归因理由 (Rationale explaining why these features affect the metric)"
-    )
-
-    # Feature mapping results (Task 2 additions)
+    # 特征映射字段 (Task 2 by LLM)
     missing_features: List[str] = Field(
-        description="客户笔记中缺失的关键特征 (Features absent in owned_note but present in success profile)"
+        default_factory=list,
+        description="客户笔记中缺失的关键特征 (Features absent in owned_note)"
     )
     weak_features: List[str] = Field(
+        default_factory=list,
         description="客户笔记中执行不足的特征 (Features present but poorly executed)"
     )
     gap_explanation: str = Field(
-        description="差距原因解释 (Why this gap exists, 2-3 sentences, 50-200 chars)",
-        min_length=10,
-        max_length=200
+        default="",
+        description="差距原因解释 (Why this gap exists, 50-200 chars)"
     )
     recommendation_summary: str = Field(
-        description="改进建议摘要 (What to improve, 1-2 sentences, 20-100 chars)",
-        min_length=20,
-        max_length=100
+        default="",
+        description="改进建议摘要 (What to improve, 20-100 chars)"
     )
+
+    # 优先级字段 (Task 2 by LLM)
+    priority_rank: Optional[int] = Field(
+        default=None,
+        description="优先级排名 (1-based ranking, 1 is highest priority)",
+        gt=0
+    )
+
+    @field_validator('significance')
+    @classmethod
+    def validate_significance(cls, v: str) -> str:
+        """Validate significance is one of allowed values."""
+        allowed = {'critical', 'very_significant', 'significant', 'marginal', 'none', 'undefined'}
+        if v not in allowed:
+            raise ValueError(f"significance must be one of {allowed}, got '{v}'")
+        return v
 
     @model_validator(mode='before')
     @classmethod
@@ -324,24 +298,31 @@ class FeatureMappedGap(BaseModel):
         return data
 
 
-class FeatureMappedGapAnalysis(BaseModel):
-    """特征映射后的完整差距分析 (Complete gap analysis with feature mapping).
+# Backward compatibility alias
+Gap = UnifiedGap
 
-    Output from Task 2: map_gaps_to_features.
+
+class GapAnalysis(BaseModel):
+    """客户笔记与目标笔记间的差距分析 (Gap analysis between owned and target notes).
+
+    Output from StatisticalDeltaTool (Task 1: calculate_statistical_gaps).
+    Uses UnifiedGap which supports progressive field filling.
     """
 
-    significant_gaps: List[FeatureMappedGap] = Field(
-        description="显著差距列表，已包含特征映射 (Significant gaps with feature attribution)"
-    )
-    marginal_gaps: List[FeatureMappedGap] = Field(
+    significant_gaps: List[UnifiedGap] = Field(
         default_factory=list,
-        description="边缘显著差距列表 (Marginal gaps with feature attribution)"
+        description="显著差距列表 (Gaps with p < 0.05, sorted by priority)"
     )
-    non_significant_gaps: List[FeatureMappedGap] = Field(
+    marginal_gaps: List[UnifiedGap] = Field(
         default_factory=list,
-        description="非显著差距列表 (Non-significant gaps, may have minimal feature mapping)"
+        description="边缘显著差距列表 (Gaps with 0.05 <= p < 0.10)"
+    )
+    non_significant_gaps: List[UnifiedGap] = Field(
+        default_factory=list,
+        description="非显著差距列表 (Gaps with p >= 0.10, for completeness)"
     )
     priority_order: List[str] = Field(
+        default_factory=list,
         description="按优先级排序的指标名称 (Metric names sorted by priority)"
     )
     sample_size: int = Field(description="使用的目标笔记数量 (Number of target notes used)")
@@ -358,56 +339,7 @@ class FeatureMappedGapAnalysis(BaseModel):
         return data
 
 
-class PrioritizedGapAnalysis(BaseModel):
-    """优先级排序后的差距分析 (Gap analysis with prioritization and root causes).
-
-    Output from Task 3: prioritize_gaps.
-    """
-
-    significant_gaps: List[FeatureMappedGap] = Field(
-        description="显著差距列表，已包含priority_rank (Significant gaps with priority ranking)"
-    )
-    marginal_gaps: List[FeatureMappedGap] = Field(
-        default_factory=list,
-        description="边缘显著差距列表"
-    )
-    non_significant_gaps: List[FeatureMappedGap] = Field(
-        default_factory=list,
-        description="非显著差距列表"
-    )
-
-    # Cross-metric insights (Task 3 additions)
-    top_priority_metrics: List[str] = Field(
-        description="Top 3 metrics to focus on (by priority score)",
-        max_length=3
-    )
-    root_causes: List[str] = Field(
-        description="3-5 root causes across gaps (e.g., '标题缺乏情感钩子')",
-        min_length=3,
-        max_length=5
-    )
-    impact_summary: str = Field(
-        description="Overall narrative (200-500 chars)",
-        min_length=50,
-        max_length=500
-    )
-
-    # Metadata
-    priority_order: List[str] = Field(
-        description="按优先级排序的指标名称 (Metric names sorted by priority)"
-    )
-    sample_size: int = Field(description="使用的目标笔记数量 (Number of target notes used)")
-
-    @model_validator(mode='before')
-    @classmethod
-    def convert_null_lists_to_empty(cls, data: Any) -> Any:
-        """Convert null/None values to empty lists for List fields."""
-        if isinstance(data, dict):
-            list_fields = [
-                'significant_gaps', 'marginal_gaps', 'non_significant_gaps',
-                'top_priority_metrics', 'root_causes', 'priority_order'
-            ]
-            for field in list_fields:
-                if field in data and data[field] is None:
-                    data[field] = []
-        return data
+# Backward compatibility aliases (deprecated, use UnifiedGap/GapAnalysis instead)
+FeatureMappedGap = UnifiedGap
+FeatureMappedGapAnalysis = GapAnalysis
+PrioritizedGapAnalysis = GapAnalysis

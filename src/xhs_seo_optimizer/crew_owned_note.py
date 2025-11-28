@@ -25,6 +25,7 @@ from xhs_seo_optimizer.tools import (
     NLPAnalysisTool,
     determine_marketing_sensitivity,
 )
+from xhs_seo_optimizer.utils import format_json_output
 
 
 @CrewBase
@@ -51,12 +52,14 @@ class XhsSeoOptimizerCrewOwnedNote:
         if proxy:
             print(f"使用代理 (通过环境变量): {proxy}")
 
-        # LLM configuration for OpenRouter (same as CompetitorAnalyst)
-        # Use temperature=0.0 for report generation to ensure valid JSON output
+        # LLM configuration for OpenRouter with retry
+        # Note: response_format not supported for OpenRouter provider
+        # Rely on guardrails + output_pydantic for JSON validation
         llm_config = {
             'base_url': 'https://openrouter.ai/api/v1',
             'api_key': os.getenv("OPENROUTER_API_KEY", ""),
-            'temperature': 0.0
+            'temperature': 0.1,
+            'num_retries': 3,  # LiteLLM auto-retry on API errors
         }
 
         self.custom_llm = LLM(
@@ -64,9 +67,16 @@ class XhsSeoOptimizerCrewOwnedNote:
             **llm_config
         )
 
+        # Function LLM without JSON mode (for function calling)
+        function_llm_config = {
+            'base_url': 'https://openrouter.ai/api/v1',
+            'api_key': os.getenv("OPENROUTER_API_KEY", ""),
+            'temperature': 0.1,
+            'num_retries': 3,
+        }
         self.function_llm = LLM(
             model='openrouter/deepseek/deepseek-r1-0528',
-            **llm_config
+            **function_llm_config
         )
 
     @before_kickoff
@@ -107,25 +117,13 @@ class XhsSeoOptimizerCrewOwnedNote:
         else:
             raise ValueError(f"owned_note must be Note object or dict, got {type(owned_note)}")
 
-        # Validate required fields in owned_note_data
+        # Validate required fields in owned_note_data (standard format)
         if "note_id" not in owned_note_data:
             raise ValueError("owned_note must have note_id field")
+        if "meta_data" not in owned_note_data:
+            raise ValueError("owned_note must have meta_data field")
         if "prediction" not in owned_note_data:
             raise ValueError("owned_note must have prediction field")
-
-        # Support both nested (meta_data) and flat structure
-        # If meta_data doesn't exist, create it from flat fields
-        if "meta_data" not in owned_note_data:
-            # Check for required flat fields
-            if "title" not in owned_note_data:
-                raise ValueError("owned_note must have 'title' field (or nested 'meta_data')")
-            # Convert flat structure to nested meta_data
-            owned_note_data["meta_data"] = {
-                "title": owned_note_data.get("title", ""),
-                "content": owned_note_data.get("content", ""),
-                "cover_image_url": owned_note_data.get("cover_image_url", ""),
-                "inner_image_urls": owned_note_data.get("inner_image_urls", []),
-            }
 
         # Store serialized data in shared context (for tools to access)
         # Tools will use smart mode: multimodal_vision_analysis(note_id="xxx")
@@ -276,7 +274,9 @@ class XhsSeoOptimizerCrewOwnedNote:
                 self.extract_visual_subjects_task()
             ],
             output_pydantic=AuditReport,  # Final output validation
-            output_file="outputs/audit_report.json"
+            output_file="outputs/audit_report.json",
+            guardrails=[format_json_output],  # Extract JSON from markdown/prefix
+            guardrail_max_retries=2
         )
 
     @crew

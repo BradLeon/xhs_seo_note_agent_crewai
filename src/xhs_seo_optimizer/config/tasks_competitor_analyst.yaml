@@ -23,18 +23,17 @@ extract_features:
   description: |
     **任务目标**: 对所有笔记提取文本和视觉特征
 
-    你需要分析 {target_notes_count} 条笔记。这些笔记在上游任务 (aggregate_statistics) 中已被分析过。
+    你需要分析 {target_notes_count} 条笔记。
 
-    **获取笔记ID列表**:
-    从上游任务 aggregate_statistics 的输出中，可以找到所有笔记的ID信息。
-    笔记ID类似于: "5e96b4f700000000010040e6", "5f805cb50000000001004f7b" 等。
+    **笔记ID列表** (必须使用以下真实ID，直接复制使用):
+    {target_note_ids_list}
 
-    **执行步骤** (对每条笔记):
-    1. 调用 nlp_text_analysis(note_id="笔记ID")
+    **执行步骤** (对列表中的每个笔记ID):
+    1. 调用 nlp_text_analysis(note_id="<从上面列表选择>")
        - ⚠️ 重要: 只传 note_id 参数，工具会自动获取该笔记的文本内容并分析
        - 返回 30+ 个文本特征 (title_pattern, opening_strategy, pain_points 等)
 
-    2. 调用 multimodal_vision_analysis(note_id="笔记ID")
+    2. 调用 multimodal_vision_analysis(note_id="<从上面列表选择>")
        - ⚠️ 重要: 只传 note_id 参数，工具会自动获取该笔记的图片并分析
        - 返回 17+ 个视觉特征 (thumbnail_appeal, color_scheme, visual_tone 等)
 
@@ -43,10 +42,10 @@ extract_features:
     构建完整的 features_matrix: {{note_id: {{text_features..., visual_features...}}}}
 
     **禁止事项**:
-    - ❌ 不要创造或想象笔记ID
+    - ❌ 不要创造或想象笔记ID (如 "note_1", "note_2")
     - ❌ 不要创造或想象笔记内容
     - ❌ 不要传递 note_metadata 参数（工具会自动获取）
-    - ✅ 只使用真实的笔记ID（来自上游任务）
+    - ✅ 只使用上面列表中的真实笔记ID
     - ✅ 让工具自动处理数据获取
 
   expected_output: "Features matrix JSON (dict mapping note_id to combined text+visual features)"
@@ -70,22 +69,48 @@ analyze_metrics:
     10. impression (曝光量)
 
     对每个指标:
-    a. 计算变异系数 (CV = std/mean)，判断方差级别
-    b. 如果 CV >= 0.3: 过滤出该指标 top 50% 的笔记
-    c. 统计这些笔记中各特征的 prevalence (出现比例)
-    d. 识别 prevalence > 70% 的显著特征
-    e. 为每个特征生成 FeatureAnalysis (prevalence_pct, why_it_works, creation_formula)
-    f. 生成 MetricSuccessProfile (包含 metric_name, sample_size, variance_level, feature_analyses, metric_success_narrative)
+    a. 计算变异系数 (CV = std/mean)，判断方差级别:
+       - CV < 0.15: Low (表现一致，特征可能是通用必备)
+       - 0.15 <= CV < 0.3: Medium (轻微分化)
+       - CV >= 0.3: High (强分化，适合特征归因分析)
+    b. **无论 CV 高低，都必须生成 MetricSuccessProfile**:
+       - 如果 CV >= 0.3 (High): 执行 top 50% 笔记过滤和特征归因分析
+       - 如果 CV < 0.3 (Low/Medium): feature_analyses 为空字典 {{}}，但仍需填写其他字段
+    c. 每个 MetricSuccessProfile 必须包含:
+       - metric_name: str - 指标名称 (必填)
+       - sample_size: int - 样本数量 (必填, > 0)
+       - variance_level: str - 只能是 "low" | "medium" | "high" 之一 (必填)
+       - relevant_features: List[str] - 该指标的相关特征列表 (必填, 来自attribution规则)
+       - feature_analyses: Dict | null - 特征分析字典 (选填, 低方差时为空字典 {{}})
+       - metric_success_narrative: str - 成功叙事 (必填, >30字符, 即使低方差也要总结共性模式)
+       - timestamp: str | null - ISO 8601 时间戳 (选填, e.g., "2024-11-28T10:30:00Z")
 
-    **重要**: 必须分析全部10个指标，生成10个 MetricSuccessProfile。
+    **JSON 示例** (低方差场景):
+    {{
+      "metric_name": "ctr",
+      "sample_size": 4,
+      "variance_level": "low",
+      "relevant_features": ["title_pattern", "opening_hook", "emotional_triggers"],
+      "feature_analyses": {{}},
+      "metric_success_narrative": "该指标在所有笔记中表现一致，共性特征包括...",
+      "timestamp": "2024-11-28T10:30:00Z"
+    }}
 
-  expected_output: "List of 10 MetricSuccessProfile objects (JSON array)"
+    **重要**: 必须分析全部10个指标，生成10个 MetricSuccessProfile，无论方差高低。
+
+  expected_output: "List of 10 MetricSuccessProfile objects (JSON array), 每个都包含 metric_name, sample_size, variance_level, relevant_features, feature_analyses, metric_success_narrative"
   agent: competitor_analyst
 
 
 generate_report:
   description: |
     **任务目标**: 生成最终的竞品成功模式分析报告
+
+    **重要**: 无论方差分析结果如何，都必须生成完整的 SuccessProfileReport。
+    即使所有指标的 CV < 0.3 (低方差)，也要:
+    1. 记录每个指标的 variance_level
+    2. 基于共性模式生成 key_success_factors (观察所有笔记的共同特征)
+    3. 生成 viral_formula_summary
 
     基于上游任务的结果:
     - aggregated_stats (来自 Task 1)
@@ -94,20 +119,50 @@ generate_report:
     执行跨指标总结:
     1. 从所有 MetricSuccessProfile 中提取共性模式
     2. 识别 3-5 个关键成功因素 (key_success_factors)
-       - 每个因素包含: factor, impact_level, supporting_evidence
+       - **重要**: key_success_factors 是 List[str] 格式，不是字典列表!
+       - 每个元素是一个简洁的成功因素描述字符串
+       - 低方差时: 基于高表现笔记的共同特征总结
     3. 生成爆款公式总结 (viral_formula_summary)
        - 简洁的文本描述 (>50 characters)
        - 总结可复制的创作公式
 
-    创建 SuccessProfileReport，包含:
-    - keyword: '{keyword}'
-    - sample_size: {target_notes_count}
-    - aggregated_stats: 聚合统计数据
-    - metric_profiles: 10个指标分析
-    - key_success_factors: 3-5个关键成功因素
-    - viral_formula_summary: 爆款公式总结
-    - analysis_timestamp: 当前时间戳
+    **必须输出以下 JSON 格式** (严格遵守，不要输出其他格式):
+    ```json
+    {{
+      "keyword": "{keyword}",
+      "sample_size": {target_notes_count},
+      "aggregated_stats": {{
+        "prediction_stats": {{"ctr": {{"mean": 0.1, "median": 0.1, "std": 0.01, "min": 0.08, "max": 0.12, "count": 4}}, ...}},
+        "tag_frequencies": {{}},
+        "tag_modes": {{}},
+        "sample_size": {target_notes_count},
+        "outliers_removed": 0
+      }},
+      "metric_profiles": [
+        {{
+          "metric_name": "ctr",
+          "sample_size": {target_notes_count},
+          "variance_level": "low",
+          "relevant_features": ["title_pattern", "opening_hook"],
+          "feature_analyses": {{}},
+          "metric_success_narrative": "描述该指标的成功模式..."
+        }}
+      ],
+      "key_success_factors": [
+        "情感化标题配合痛点描述能显著提升点击率",
+        "清晰的产品展示和权威背书增强信任感",
+        "互动性结尾促进评论和收藏"
+      ],
+      "viral_formula_summary": "爆款公式的文字总结，至少50字符...",
+      "analysis_timestamp": "2024-01-01T00:00:00"
+    }}
+    ```
 
-  expected_output: "Complete SuccessProfileReport (JSON format)"
+    **字段类型说明**:
+    - key_success_factors: List[str] - 纯字符串列表，3-5项
+    - feature_analyses: Dict - 空字典 {{}} 或 特征分析字典
+    - relevant_features: List[str] - 相关特征列表
+
+  expected_output: "Complete SuccessProfileReport JSON (必须包含所有必填字段: keyword, sample_size, aggregated_stats, metric_profiles, key_success_factors, viral_formula_summary, analysis_timestamp)"
   agent: competitor_analyst
   output_file: "outputs/success_profile_report.json"

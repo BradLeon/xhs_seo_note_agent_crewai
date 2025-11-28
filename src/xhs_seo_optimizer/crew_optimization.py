@@ -18,6 +18,7 @@ import json
 import os
 from datetime import datetime
 
+from .utils import format_json_output
 from .models.reports import (
     OptimizationPlan,
     OptimizedNote,
@@ -44,11 +45,15 @@ class XhsSeoOptimizerCrewOptimization:
     def __init__(self):
         """Initialize Optimization Strategist crew."""
         self.shared_context = {}
-        
+
+        # LLM configuration for OpenRouter with retry
+        # Note: response_format not supported for OpenRouter provider
+        # Rely on guardrails + output_pydantic for JSON validation
         llm_config = {
             'base_url': 'https://openrouter.ai/api/v1',
             'api_key': os.getenv("OPENROUTER_API_KEY", ""),
-            'temperature': 0.0
+            'temperature': 0.0,
+            'num_retries': 3,  # LiteLLM auto-retry on API errors
         }
 
         self.custom_llm = LLM(
@@ -125,7 +130,9 @@ class XhsSeoOptimizerCrewOptimization:
                 self.generate_text_optimizations(),
                 self.generate_visual_prompts()
             ],
-            output_pydantic=OptimizationPlan  # Final output validation
+            output_pydantic=OptimizationPlan,  # Final output validation
+            guardrails=[format_json_output],  # Extract JSON from markdown/prefix
+            guardrail_max_retries=2
         )
 
     @task
@@ -163,7 +170,9 @@ class XhsSeoOptimizerCrewOptimization:
                 self.generate_images()
             ],
             output_pydantic=OptimizedNote,
-            output_file="outputs/optimized_note.json"
+            output_file="outputs/optimized_note.json",
+            guardrails=[format_json_output],  # Extract JSON from markdown/prefix
+            guardrail_max_retries=2
         )
 
     def _flatten_text_features(self, text_features: Dict) -> Dict[str, str]:

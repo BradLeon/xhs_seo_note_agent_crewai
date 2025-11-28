@@ -1,12 +1,11 @@
 """Data models for notes and analysis results - 数据模型."""
 
 from .note import Note, NoteMetaData, NotePrediction, NoteTag
-from .analysis_results import VisionAnalysisResult, TextAnalysisResult, AggregatedMetrics, GapAnalysis
+from .analysis_results import VisionAnalysisResult, TextAnalysisResult, AggregatedMetrics, GapAnalysis, UnifiedGap
 from .reports import (
     FeaturePattern,
     SuccessProfileReport,
     AuditReport,
-    MetricGap,
     GapReport,
     OptimizationPlan,
 )
@@ -22,11 +21,11 @@ __all__ = [
     "TextAnalysisResult",
     "AggregatedMetrics",
     "GapAnalysis",
+    "UnifiedGap",
     # Report models
     "FeaturePattern",
     "SuccessProfileReport",
     "AuditReport",
-    "MetricGap",
     "GapReport",
     "OptimizationPlan",
 ]

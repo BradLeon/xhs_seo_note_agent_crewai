@@ -24,6 +24,7 @@ competitor_analyst:
     你的分析报告总是包含充分的统计证据和可操作的创作公式。
   verbose: true
   max_iter: 50  # Increase iteration limit for complex multi-step analysis
+  max_rpm: 10   # Rate limit: max 10 requests per minute to avoid API throttling
   allow_delegation: false  # Single agent, no delegation needed
 
 
@@ -54,6 +55,7 @@ owned_note_auditor:
     You never make subjective quality judgments, but let data and features speak.
   verbose: true
   max_iter: 25  # Sufficient for 3 sequential tasks
+  max_rpm: 10   # Rate limit: max 10 requests per minute to avoid API throttling
   allow_delegation: false  # Single agent, no delegation needed
 
 
@@ -76,6 +78,10 @@ gap_finder:
     You are a data-driven gap analyst skilled at identifying critical issues using statistical methods.
     You can precisely attribute metric gaps to specific missing or poorly-executed content features.
     Your analysis provides clear direction for the optimization strategist.
+  verbose: true
+  max_iter: 15  # Limit iterations to prevent infinite loops
+  max_rpm: 10   # Rate limit to avoid API throttling
+  allow_delegation: false
 
 
 # ============================================================================
