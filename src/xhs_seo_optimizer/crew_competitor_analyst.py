@@ -2,9 +2,14 @@
 
 This crew analyzes target_notes to extract success patterns for a given keyword.
 It uses the CompetitorAnalyst agent with atomic tools (data aggregation, NLP, vision).
+
+Architecture:
+- General tasks (free-form text): Use LLM with OpenRouter
+- Structured output tasks (response_model): Use OpenAICompletion with Gemini OpenAI-compatible endpoint
 """
 
 from crewai import Agent, Crew, Task, Process, LLM
+from crewai.llms.providers.openai.completion import OpenAICompletion
 from crewai.project import CrewBase, agent, crew, task, before_kickoff
 from typing import Dict, Any
 import os
@@ -16,7 +21,6 @@ from xhs_seo_optimizer.tools import (
     MultiModalVisionTool,
     NLPAnalysisTool,
 )
-from xhs_seo_optimizer.utils import format_json_output
 
 
 @CrewBase
@@ -24,14 +28,13 @@ class XhsSeoOptimizerCrewCompetitorAnalyst:
     """Crew for analyzing competitor notes success patterns.
 
     This crew includes:
-    - competitor_analyst agent
+    - competitor_analyst agent (for free-form analysis tasks)
+    - report_generator agent (for structured output tasks with response_model)
     - 4 sequential tasks: aggregate → extract features → analyze metrics → generate report
 
-    It uses sequential process (not hierarchical) since we don't need a manager
-    for a single agent.
-
-    Following official CrewAI pattern: complex objects are serialized to dicts
-    using model_dump() in @before_kickoff, then tools receive these dicts.
+    Architecture:
+    - Tasks 1-3: Use competitor_analyst with OpenRouter LLM (free-form text)
+    - Task 4: Use report_generator with OpenAICompletion + Gemini (structured output via response_model)
     """
 
     agents_config = 'config/agents.yaml'
@@ -39,38 +42,26 @@ class XhsSeoOptimizerCrewCompetitorAnalyst:
 
     def __init__(self):
         # Check if proxy is configured via environment variables
-        # The underlying HTTP client will automatically use HTTP_PROXY/HTTPS_PROXY
         proxy = os.getenv("HTTP_PROXY") or os.getenv("HTTPS_PROXY")
         if proxy:
             print(f"使用代理 (通过环境变量): {proxy}")
 
-        # LLM configuration for OpenRouter with retry
-        # Try Gemini native JSON mode via extra_body
-        llm_config = {
-            'base_url': 'https://openrouter.ai/api/v1',
-            'api_key': os.getenv("OPENROUTER_API_KEY", ""),
-            'temperature': 0.1,
-            'num_retries': 3,  # LiteLLM auto-retry on API errors
-            'extra_body': {
-                'response_mime_type': 'application/json',  # Gemini native JSON mode
-            },
-        }
-
-        self.custom_llm = LLM(
-            model='openrouter/google/gemini-2.5-flash-lite',
-            **llm_config
+        # General LLM (OpenRouter) - for free-form analysis tasks
+        # Note: OpenRouter doesn't support response_format
+        self.general_llm = LLM(
+            model='openrouter/google/gemini-2.5-flash',
+            base_url='https://openrouter.ai/api/v1',
+            api_key=os.getenv("OPENROUTER_API_KEY", ""),
+            temperature=0.1,
         )
 
-        # Function LLM without JSON mode (for function calling)
-        function_llm_config = {
-            'base_url': 'https://openrouter.ai/api/v1',
-            'api_key': os.getenv("OPENROUTER_API_KEY", ""),
-            'temperature': 0.1,
-            'num_retries': 3,
-        }
-        self.fuction_llm = LLM(
-            model='openrouter/deepseek/deepseek-r1-0528',
-            **function_llm_config
+        # Structured output LLM (Gemini OpenAI-compatible endpoint)
+        # Uses OpenAICompletion which supports response_format for native structured output
+        self.structured_llm = OpenAICompletion(
+            model='gemini-2.5-flash',
+            base_url='https://generativelanguage.googleapis.com/v1beta/openai/',
+            api_key=os.getenv("GOOGLE_API_KEY", ""),
+            temperature=0.1,
         )
 
     @before_kickoff
@@ -145,10 +136,10 @@ class XhsSeoOptimizerCrewCompetitorAnalyst:
 
     @agent
     def competitor_analyst(self) -> Agent:
-        """竞品分析师 agent.
+        """竞品分析师 agent (for free-form analysis tasks).
 
-        The agent that coordinates atomic tools to analyze target_notes.
-        Tools now receive serialized dict data directly (no context needed).
+        Uses OpenRouter LLM for free-form text output.
+        Coordinates atomic tools to analyze target_notes.
         """
         return Agent(
             config=self.agents_config['competitor_analyst'],
@@ -157,9 +148,22 @@ class XhsSeoOptimizerCrewCompetitorAnalyst:
                 MultiModalVisionTool(),
                 NLPAnalysisTool()
             ],
-            llm=self.custom_llm,
-            function_calling_llm=self.fuction_llm,
+            llm=self.general_llm,
+            function_calling_llm=self.general_llm,
             verbose=True
+        )
+
+    @agent
+    def report_generator(self) -> Agent:
+        """报告生成 agent (for structured output tasks).
+
+        Uses OpenAICompletion + Gemini for native structured output.
+        Specialized for tasks with response_model that require strict JSON conformance.
+        """
+        return Agent(
+            config=self.agents_config['report_generator'],
+            llm=self.structured_llm,
+            verbose=False  # Less verbose for structured output
         )
 
     @task
@@ -204,21 +208,22 @@ class XhsSeoOptimizerCrewCompetitorAnalyst:
 
     @task
     def generate_report_task(self) -> Task:
-        """Task 4: 生成最终报告.
+        """Task 4: 生成最终报告 (structured output).
 
         Generates final SuccessProfileReport with cross-metric summary.
         Depends on Tasks 1 & 3.
+
+        Uses report_generator agent with OpenAICompletion + response_model
+        for native structured output via Gemini OpenAI-compatible API.
         """
         return Task(
             config=self.tasks_config['generate_report'],
-            agent=self.competitor_analyst(),
+            agent=self.report_generator(),  # Uses structured_llm
+            response_model=SuccessProfileReport,  # Native structured output!
             context=[
                 self.aggregate_statistics_task(),  # Needs aggregated_stats
                 self.analyze_metrics_task()        # Needs metric_profiles
-            ],
-            output_pydantic=SuccessProfileReport,  # Final output validation
-            guardrails=[format_json_output],  # Extract JSON from markdown/prefix
-            guardrail_max_retries=2
+            ]
         )
 
     @crew
@@ -237,3 +242,53 @@ class XhsSeoOptimizerCrewCompetitorAnalyst:
             process=Process.sequential,  # Execute tasks in order
             verbose=True
         )
+
+    def kickoff(self, inputs: Dict[str, Any]) -> SuccessProfileReport:
+        """Execute crew and return structured output.
+
+        The generate_report_task uses response_model=SuccessProfileReport with
+        OpenAICompletion + Gemini for native structured output. No post-processing needed.
+
+        Args:
+            inputs: Dict with target_notes, keyword, etc.
+
+        Returns:
+            SuccessProfileReport: Validated Pydantic model instance
+        """
+        print("\n" + "="*60)
+        print("🚀 Starting CompetitorAnalyst crew execution...")
+        print("="*60 + "\n")
+
+        # Execute CrewAI task flow
+        # The last task (generate_report_task) uses response_model for native structured output
+        crew_result = self.crew().kickoff(inputs=inputs)
+
+        # Parse the structured output from crew result
+        # When response_model is used, crew_result.raw contains JSON string
+        if crew_result.pydantic:
+            # If CrewAI already parsed it as Pydantic
+            structured_report = crew_result.pydantic
+        else:
+            # Parse from raw JSON string
+            structured_report = SuccessProfileReport.model_validate_json(crew_result.raw)
+
+        # Save report to file
+        self._save_report(structured_report)
+
+        print("\n" + "="*60)
+        print("✅ SuccessProfileReport generated successfully!")
+        print("="*60 + "\n")
+
+        return structured_report
+
+    def _save_report(self, report: SuccessProfileReport) -> None:
+        """Save SuccessProfileReport to outputs directory."""
+        import os
+
+        os.makedirs("outputs", exist_ok=True)
+        output_path = "outputs/success_profile_report.json"
+
+        with open(output_path, 'w', encoding='utf-8') as f:
+            f.write(report.model_dump_json(indent=2, ensure_ascii=False))
+
+        print(f"✓ SuccessProfileReport saved to {output_path}")

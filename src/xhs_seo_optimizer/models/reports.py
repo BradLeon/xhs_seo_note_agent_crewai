@@ -11,7 +11,7 @@ Pydantic models for agent-generated reports:
 """
 
 from typing import List, Dict, Any, Optional
-from pydantic import AliasChoices, BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 from .analysis_results import AggregatedMetrics, TextAnalysisResult, VisionAnalysisResult, UnifiedGap
 
@@ -77,31 +77,6 @@ class FeaturePattern(BaseModel):
         description="关键执行要素 (3-5 specific execution points)"
     )
 
-    @field_validator('examples')
-    @classmethod
-    def validate_examples_length(cls, v: List[str]) -> List[str]:
-        """Validate examples list has 1-5 items."""
-        if not (1 <= len(v) <= 5):
-            raise ValueError(f"examples must contain 1-5 items, got {len(v)}")
-        return v
-
-    @field_validator('key_elements')
-    @classmethod
-    def validate_key_elements_length(cls, v: List[str]) -> List[str]:
-        """Validate key_elements list has 3-5 items."""
-        if not (3 <= len(v) <= 5):
-            raise ValueError(f"key_elements must contain 3-5 items, got {len(v)}")
-        return v
-
-    @field_validator('feature_type')
-    @classmethod
-    def validate_feature_type(cls, v: str) -> str:
-        """Validate feature_type is one of: title, cover, content, tag."""
-        allowed_types = {'title', 'cover', 'content', 'tag'}
-        if v not in allowed_types:
-            raise ValueError(f"feature_type must be one of {allowed_types}, got '{v}'")
-        return v
-
     @model_validator(mode='before')
     @classmethod
     def convert_null_lists_to_empty(cls, data: Any) -> Any:
@@ -151,28 +126,8 @@ class FeatureAnalysis(BaseModel):
     )
 
     key_elements: List[str] = Field(
-        description="3-5个具体、可验证的执行要点 (3-5 specific execution points)",
-        min_length=3,
-        max_length=5
+        description="3-5个具体、可验证的执行要点 (3-5 specific execution points)"
     )
-
-    @field_validator('examples')
-    @classmethod
-    def validate_examples_not_empty(cls, v: List[str]) -> List[str]:
-        """Validate examples list is not empty and has at most 5 items."""
-        if len(v) == 0:
-            raise ValueError("examples cannot be empty")
-        if len(v) > 5:
-            raise ValueError(f"examples can have at most 5 items, got {len(v)}")
-        return v
-
-    @field_validator('key_elements')
-    @classmethod
-    def validate_key_elements_length(cls, v: List[str]) -> List[str]:
-        """Validate key_elements has 3-5 items."""
-        if not (3 <= len(v) <= 5):
-            raise ValueError(f"key_elements must contain 3-5 items, got {len(v)}")
-        return v
 
     @model_validator(mode='before')
     @classmethod
@@ -225,23 +180,6 @@ class MetricSuccessProfile(BaseModel):
         default=None,
         description="分析时间戳 (Analysis timestamp in ISO 8601 format, Optional)"
     )
-
-    @field_validator('variance_level')
-    @classmethod
-    def validate_variance_level(cls, v: str) -> str:
-        """Validate variance_level is one of: low, medium, high."""
-        allowed_levels = {'low', 'medium', 'high'}
-        if v not in allowed_levels:
-            raise ValueError(f"variance_level must be one of {allowed_levels}, got '{v}'")
-        return v
-
-    @field_validator('metric_success_narrative')
-    @classmethod
-    def validate_narrative_length(cls, v: str) -> str:
-        """Validate narrative is substantial (>30 characters)."""
-        if len(v) <= 30:
-            raise ValueError(f"metric_success_narrative must be >30 characters, got {len(v)}")
-        return v
 
     @model_validator(mode='before')
     @classmethod
@@ -300,22 +238,6 @@ class SuccessProfileReport(BaseModel):
     analysis_timestamp: str = Field(
         description="分析时间戳 (ISO 8601 format, e.g., '2025-11-14T10:30:00Z')"
     )
-
-    @field_validator('key_success_factors')
-    @classmethod
-    def validate_key_success_factors_length(cls, v: List[str]) -> List[str]:
-        """Validate key_success_factors list has 3-5 items."""
-        if not (3 <= len(v) <= 5):
-            raise ValueError(f"key_success_factors must contain 3-5 items, got {len(v)}")
-        return v
-
-    @field_validator('viral_formula_summary')
-    @classmethod
-    def validate_summary_length(cls, v: str) -> str:
-        """Validate viral_formula_summary is substantial (>50 characters)."""
-        if len(v) <= 50:
-            raise ValueError(f"viral_formula_summary must be >50 characters, got {len(v)}")
-        return v
 
     @model_validator(mode='before')
     @classmethod
@@ -409,28 +331,6 @@ class AuditReport(BaseModel):
         description="审计时间戳 (ISO 8601 format, e.g., '2025-11-20T10:30:00Z')"
     )
 
-    @field_validator('marketing_sensitivity')
-    @classmethod
-    def validate_marketing_sensitivity(cls, v: str) -> str:
-        """Validate marketing_sensitivity is one of allowed values."""
-        allowed = {'high', 'medium', 'low'}
-        if v not in allowed:
-            raise ValueError(f"marketing_sensitivity must be one of {allowed}, got '{v}'")
-        return v
-
-    @field_validator('feature_summary')
-    @classmethod
-    def validate_feature_summary_length(cls, v: str) -> str:
-        """Validate feature_summary is substantial and objective (50-300 chars)."""
-        if not (50 <= len(v) <= 300):
-            raise ValueError(f"feature_summary must be 50-300 characters, got {len(v)}")
-        # Check for judgment words (should be objective)
-        judgment_words = ['好', '坏', '弱', '差', '优秀', '不足', 'weak', 'bad', 'poor', 'strong', 'excellent']
-        lower_text = v.lower()
-        found_judgments = [word for word in judgment_words if word in lower_text]
-        if found_judgments:
-            raise ValueError(f"feature_summary should be objective, found judgment words: {found_judgments}")
-        return v
 
 
 class GapReport(BaseModel):
@@ -473,13 +373,11 @@ class GapReport(BaseModel):
 
     root_causes: List[str] = Field(
         description="3-5 root causes across gaps (e.g., '标题缺乏情感钩子')",
-        min_length=3,
         max_length=5
     )
 
     impact_summary: str = Field(
-        description="Overall narrative (50-500 chars)",
-        min_length=50,
+        description="Overall narrative (max 500 chars)",
         max_length=500
     )
 
@@ -492,30 +390,6 @@ class GapReport(BaseModel):
     gap_timestamp: str = Field(
         description="分析时间戳 (ISO 8601 format, e.g., '2025-11-21T10:30:00Z')"
     )
-
-    @field_validator('top_priority_metrics')
-    @classmethod
-    def validate_top_priority_metrics_length(cls, v: List[str]) -> List[str]:
-        """Validate top_priority_metrics has at most 3 items."""
-        if len(v) > 3:
-            raise ValueError(f"top_priority_metrics can have at most 3 items, got {len(v)}")
-        return v
-
-    @field_validator('root_causes')
-    @classmethod
-    def validate_root_causes_length(cls, v: List[str]) -> List[str]:
-        """Validate root_causes has 3-5 items."""
-        if not (3 <= len(v) <= 5):
-            raise ValueError(f"root_causes must contain 3-5 items, got {len(v)}")
-        return v
-
-    @field_validator('impact_summary')
-    @classmethod
-    def validate_impact_summary_length(cls, v: str) -> str:
-        """Validate impact_summary is 50-500 characters."""
-        if not (50 <= len(v) <= 500):
-            raise ValueError(f"impact_summary must be 50-500 characters, got {len(v)}")
-        return v
 
     @model_validator(mode='before')
     @classmethod
@@ -547,8 +421,7 @@ class OptimizationItem(BaseModel):
     )
 
     rationale: str = Field(
-        description="优化理由 (Why this change improves performance, 50-200 chars)",
-        min_length=20,
+        description="优化理由 (Why this change improves performance)",
         max_length=300
     )
 
@@ -560,12 +433,6 @@ class OptimizationItem(BaseModel):
         description="针对的弱特征 (Weak features this optimization addresses)"
     )
 
-    @field_validator('targeted_metrics')
-    @classmethod
-    def validate_targeted_metrics_not_empty(cls, v: List[str]) -> List[str]:
-        """Validate targeted_metrics - allow empty for cases like hashtag optimization."""
-        # Allow empty list - some optimizations (like hashtags) may not target specific metrics
-        return v if v is not None else []
 
 
 class TitleOptimization(BaseModel):
@@ -586,24 +453,9 @@ class TitleOptimization(BaseModel):
 
     selection_rationale: str = Field(
         description="推荐理由或无需优化说明 (Why recommended, or why no optimization needed)",
-        min_length=10,
         max_length=200
     )
 
-    @field_validator('alternatives')
-    @classmethod
-    def validate_alternatives_count(cls, v: List[OptimizationItem]) -> List[OptimizationItem]:
-        """Validate 1-3 alternatives."""
-        if not (1 <= len(v) <= 3):
-            raise ValueError(f"alternatives must contain 1-3 items, got {len(v)}")
-        return v
-
-    @model_validator(mode='after')
-    def validate_recommended_index_in_range(self):
-        """Validate recommended_index is within alternatives range."""
-        if self.recommended_index >= len(self.alternatives):
-            raise ValueError(f"recommended_index ({self.recommended_index}) must be < len(alternatives) ({len(self.alternatives)})")
-        return self
 
 
 class ContentOptimization(BaseModel):
@@ -651,25 +503,21 @@ class VisualPrompt(BaseModel):
 
     prompt_text: str = Field(
         description="AIGC 生成 prompt (Chinese, detailed description for image generation)",
-        min_length=50,
         max_length=500
     )
 
     style_reference: str = Field(
         description="参考风格描述 (Style reference, e.g., '小红书爆款育儿笔记风格')",
-        min_length=10,
         max_length=100
     )
 
     key_elements: List[str] = Field(
         description="必须包含的元素 (Elements that must be in the image)",
-        min_length=2,
         max_length=6
     )
 
     color_scheme: str = Field(
         description="推荐色彩方案 (Recommended color scheme, e.g., '暖色调，柔和黄色和白色为主')",
-        min_length=10,
         max_length=100
     )
 
@@ -677,21 +525,6 @@ class VisualPrompt(BaseModel):
         description="针对的指标 (Metrics this visual targets)"
     )
 
-    @field_validator('image_type')
-    @classmethod
-    def validate_image_type(cls, v: str) -> str:
-        """Validate image_type format."""
-        if not v.startswith('inner_') and v != 'cover':
-            raise ValueError(f"image_type must be 'cover' or 'inner_N', got '{v}'")
-        return v
-
-    @field_validator('key_elements')
-    @classmethod
-    def validate_key_elements_length(cls, v: List[str]) -> List[str]:
-        """Validate key_elements has 2-6 items."""
-        if not (2 <= len(v) <= 6):
-            raise ValueError(f"key_elements must contain 2-6 items, got {len(v)}")
-        return v
 
 
 class VisualOptimization(BaseModel):
@@ -754,8 +587,7 @@ class OptimizationPlan(BaseModel):
 
     # Summary and impact
     priority_summary: str = Field(
-        description="优先执行建议 (Which optimizations to prioritize, 50-200 chars)",
-        min_length=50,
+        description="优先执行建议 (Which optimizations to prioritize)",
         max_length=300
     )
 
@@ -767,14 +599,6 @@ class OptimizationPlan(BaseModel):
     plan_timestamp: str = Field(
         description="生成时间戳 (ISO 8601 format, e.g., '2025-11-24T10:30:00Z')"
     )
-
-    @field_validator('expected_impact')
-    @classmethod
-    def validate_expected_impact_not_empty(cls, v: Dict[str, str]) -> Dict[str, str]:
-        """Validate expected_impact has at least one entry."""
-        if len(v) == 0:
-            raise ValueError("expected_impact cannot be empty")
-        return v
 
     @model_validator(mode='before')
     @classmethod
@@ -800,19 +624,16 @@ class ContentIntent(BaseModel):
     # 必须字段
     core_theme: str = Field(
         description="核心主题 (必须, e.g., 'DHA选购攻略', '新手妈妈育儿经验')",
-        min_length=2,
         max_length=50
     )
 
     target_persona: str = Field(
         description="目标人群 (必须, 结合owned_note内容和keyword确定, e.g., '新手妈妈', '健身爱好者')",
-        min_length=2,
         max_length=50
     )
 
     key_message: str = Field(
         description="关键信息/核心卖点 (必须, e.g., '科学配比是关键', 'DHA含量是选择标准')",
-        min_length=5,
         max_length=100
     )
 
@@ -827,13 +648,6 @@ class ContentIntent(BaseModel):
         description="情感基调 (可选, e.g., '专业但亲切', '轻松幽默', '真诚分享')"
     )
 
-    @field_validator('core_theme', 'target_persona', 'key_message')
-    @classmethod
-    def validate_not_empty(cls, v: str) -> str:
-        """Validate required fields are not empty or whitespace."""
-        if not v or not v.strip():
-            raise ValueError("Field cannot be empty or whitespace")
-        return v.strip()
 
 
 class VisualSubjects(BaseModel):
@@ -849,7 +663,6 @@ class VisualSubjects(BaseModel):
 
     subject_description: str = Field(
         description="主体描述 (e.g., 'DHA鱼油瓶装产品，红色瓶盖', '博主本人出镜')",
-        min_length=5,
         max_length=200
     )
 
@@ -871,22 +684,6 @@ class VisualSubjects(BaseModel):
         default_factory=list,
         description="原始内页图URLs (可作为生图参考)"
     )
-
-    @field_validator('subject_type')
-    @classmethod
-    def validate_subject_type(cls, v: str) -> str:
-        """Validate subject_type is one of allowed values."""
-        allowed = {'product', 'person', 'brand', 'scene', 'none'}
-        if v not in allowed:
-            raise ValueError(f"subject_type must be one of {allowed}, got '{v}'")
-        return v
-
-    @field_validator('must_preserve')
-    @classmethod
-    def validate_must_preserve_not_empty(cls, v: List[str]) -> List[str]:
-        """Validate must_preserve has at least one item (unless subject_type is 'none')."""
-        # Note: This validation is relaxed; actual enforcement depends on subject_type
-        return v
 
     @model_validator(mode='before')
     @classmethod
@@ -1006,15 +803,6 @@ class MarketingCheck(BaseModel):
         description="降低营销感的建议"
     )
 
-    @field_validator('level')
-    @classmethod
-    def validate_level(cls, v: str) -> str:
-        """Validate level is one of allowed values."""
-        allowed = {'low', 'medium', 'high', 'critical'}
-        if v not in allowed:
-            raise ValueError(f"level must be one of {allowed}, got '{v}'")
-        return v
-
     @model_validator(mode='before')
     @classmethod
     def convert_null_lists_to_empty(cls, data: Any) -> Any:
@@ -1088,7 +876,6 @@ class OptimizedNote(BaseModel):
 
     optimization_summary: str = Field(
         description="优化摘要 (简述做了哪些优化)",
-        min_length=20,
         max_length=500
     )
 
@@ -1107,24 +894,6 @@ class OptimizedNote(BaseModel):
     optimized_timestamp: str = Field(
         description="优化时间戳 (ISO 8601 format)"
     )
-
-    @field_validator('cover_image_source')
-    @classmethod
-    def validate_cover_source(cls, v: str) -> str:
-        """Validate cover_image_source is one of allowed values."""
-        allowed = {'generated', 'original'}
-        if v not in allowed:
-            raise ValueError(f"cover_image_source must be one of {allowed}, got '{v}'")
-        return v
-
-    @field_validator('inner_images_source')
-    @classmethod
-    def validate_inner_source(cls, v: str) -> str:
-        """Validate inner_images_source is one of allowed values."""
-        allowed = {'generated', 'original', 'mixed'}
-        if v not in allowed:
-            raise ValueError(f"inner_images_source must be one of {allowed}, got '{v}'")
-        return v
 
     @model_validator(mode='before')
     @classmethod

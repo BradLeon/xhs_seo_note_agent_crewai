@@ -105,20 +105,12 @@ class XhsSeoOptimizerFlow(Flow[XhsSeoFlowState]):
         try:
             crew = XhsSeoOptimizerCrewCompetitorAnalyst()
 
-            # API retry is handled by LiteLLM (num_retries=3 in crew LLM configs)
-            result = crew.crew().kickoff(inputs={
+            # Call our wrapped kickoff() which returns Pydantic directly
+            self.state.success_profile_report = crew.kickoff(inputs={
                 "target_notes": self.state.target_notes,
                 "keyword": self.state.keyword,
             })
-
-            # Extract Pydantic output from CrewOutput
-            if hasattr(result, 'pydantic') and result.pydantic:
-                self.state.success_profile_report = result.pydantic
-                print(f"[Flow] CompetitorAnalyst completed successfully")
-            else:
-                # Fallback: try to parse from raw output
-                print(f"[Flow] Warning: CompetitorAnalyst returned non-pydantic output")
-                self.state.add_error("CompetitorAnalyst did not return Pydantic output")
+            print(f"[Flow] CompetitorAnalyst completed successfully")
 
         except Exception as e:
             error_msg = f"CompetitorAnalyst failed: {str(e)}"
@@ -147,19 +139,12 @@ class XhsSeoOptimizerFlow(Flow[XhsSeoFlowState]):
         try:
             crew = XhsSeoOptimizerCrewOwnedNote()
 
-            # API retry is handled by LiteLLM (num_retries=3 in crew LLM configs)
-            result = crew.crew().kickoff(inputs={
+            # Call our wrapped kickoff() which returns Pydantic directly
+            self.state.audit_report = crew.kickoff(inputs={
                 "owned_note": self.state.owned_note,
                 "keyword": self.state.keyword,
             })
-
-            # Extract Pydantic output from CrewOutput
-            if hasattr(result, 'pydantic') and result.pydantic:
-                self.state.audit_report = result.pydantic
-                print(f"[Flow] OwnedNoteAuditor completed successfully")
-            else:
-                print(f"[Flow] Warning: OwnedNoteAuditor returned non-pydantic output")
-                self.state.add_error("OwnedNoteAuditor did not return Pydantic output")
+            print(f"[Flow] OwnedNoteAuditor completed successfully")
 
         except Exception as e:
             error_msg = f"OwnedNoteAuditor failed: {str(e)}"
@@ -195,19 +180,14 @@ class XhsSeoOptimizerFlow(Flow[XhsSeoFlowState]):
         try:
             crew = XhsSeoOptimizerCrewGapFinder()
 
-            # API retry is handled by LiteLLM (num_retries=3 in crew LLM configs)
-            result = crew.crew().kickoff(inputs={
+            # Call our wrapped kickoff() which returns Pydantic directly
+            # Note: save_to_file=False when running in Flow mode
+            self.state.gap_report = crew.kickoff(inputs={
                 "success_profile_report": self.state.success_profile_report.model_dump(),
                 "audit_report": self.state.audit_report.model_dump(),
                 "keyword": self.state.keyword,
-            })
-
-            if hasattr(result, 'pydantic') and result.pydantic:
-                self.state.gap_report = result.pydantic
-                print(f"[Flow] GapFinder completed successfully")
-            else:
-                print(f"[Flow] Warning: GapFinder returned non-pydantic output")
-                self.state.add_error("GapFinder did not return Pydantic output")
+            }, save_to_file=False)
+            print(f"[Flow] GapFinder completed successfully")
 
         except Exception as e:
             error_msg = f"GapFinder failed: {str(e)}"
@@ -243,21 +223,15 @@ class XhsSeoOptimizerFlow(Flow[XhsSeoFlowState]):
         try:
             crew = XhsSeoOptimizerCrewOptimization()
 
-            # API retry is handled by LiteLLM (num_retries=3 in crew LLM configs)
-            result = crew.crew().kickoff(inputs={
+            # Call our wrapped kickoff() which returns Pydantic directly
+            self.state.optimized_note = crew.kickoff(inputs={
                 "keyword": self.state.keyword,
                 "gap_report": self.state.gap_report.model_dump(),
                 "audit_report": self.state.audit_report.model_dump(),
                 "success_profile_report": self.state.success_profile_report.model_dump(),
                 "owned_note": self.state.owned_note,
             })
-
-            if hasattr(result, 'pydantic') and result.pydantic:
-                self.state.optimized_note = result.pydantic
-                print(f"[Flow] OptimizationStrategist completed successfully")
-            else:
-                print(f"[Flow] Warning: OptimizationStrategist returned non-pydantic output")
-                self.state.add_error("OptimizationStrategist did not return Pydantic output")
+            print(f"[Flow] OptimizationStrategist completed successfully")
 
         except Exception as e:
             error_msg = f"OptimizationStrategist failed: {str(e)}"

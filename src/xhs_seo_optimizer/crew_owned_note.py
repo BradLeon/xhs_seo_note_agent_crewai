@@ -7,12 +7,13 @@ This crew provides objective analysis of owned (self-published) notes:
 - Marketing sensitivity detection
 - Objective feature summary (no strength/weakness judgment)
 
-Note: Strength/weakness judgment requires competitor comparison,
-which will be handled by GapFinder agent (future implementation).
-Feature attribution can be retrieved via attribution.py rules if needed.
+Architecture:
+- General tasks (free-form text): Use LLM with OpenRouter
+- Structured output tasks (response_model): Use OpenAICompletion with Gemini OpenAI-compatible endpoint
 """
 
 from crewai import Agent, Crew, Task, Process, LLM
+from crewai.llms.providers.openai.completion import OpenAICompletion
 from crewai.project import CrewBase, agent, crew, task, before_kickoff
 from typing import Dict, Any, Union, Optional
 import os
@@ -25,7 +26,6 @@ from xhs_seo_optimizer.tools import (
     NLPAnalysisTool,
     determine_marketing_sensitivity,
 )
-from xhs_seo_optimizer.utils import format_json_output
 
 
 @CrewBase
@@ -33,14 +33,13 @@ class XhsSeoOptimizerCrewOwnedNote:
     """Crew for objective content understanding of owned notes.
 
     This crew includes:
-    - owned_note_auditor agent
-    - 2 sequential tasks: extract features → generate report
+    - owned_note_auditor agent (for free-form analysis tasks)
+    - report_generator agent (for structured output tasks with response_model)
+    - 4 sequential tasks: extract features → extract intent → extract visual → generate report
 
-    Uses sequential process with a single agent executing all tasks.
-    Provides objective analysis without strength/weakness judgment (requires GapFinder).
-
-    Following official CrewAI pattern: complex objects are serialized to dicts
-    using model_dump() in @before_kickoff, then stored in shared_context for tools.
+    Architecture:
+    - Tasks 1-3: Use owned_note_auditor with OpenRouter LLM (free-form text)
+    - Task 4: Use report_generator with OpenAICompletion + Gemini (structured output via response_model)
     """
 
     agents_config = 'config/agents.yaml'
@@ -52,31 +51,20 @@ class XhsSeoOptimizerCrewOwnedNote:
         if proxy:
             print(f"使用代理 (通过环境变量): {proxy}")
 
-        # LLM configuration for OpenRouter with retry
-        # Note: response_format not supported for OpenRouter provider
-        # Rely on guardrails + output_pydantic for JSON validation
-        llm_config = {
-            'base_url': 'https://openrouter.ai/api/v1',
-            'api_key': os.getenv("OPENROUTER_API_KEY", ""),
-            'temperature': 0.1,
-            'num_retries': 3,  # LiteLLM auto-retry on API errors
-        }
-
-        self.custom_llm = LLM(
-            model='openrouter/google/gemini-2.5-flash-lite',
-            **llm_config
+        # General LLM (OpenRouter) - for free-form analysis tasks
+        self.general_llm = LLM(
+            model='openrouter/google/gemini-2.5-flash',
+            base_url='https://openrouter.ai/api/v1',
+            api_key=os.getenv("OPENROUTER_API_KEY", ""),
+            temperature=0.1,
         )
 
-        # Function LLM without JSON mode (for function calling)
-        function_llm_config = {
-            'base_url': 'https://openrouter.ai/api/v1',
-            'api_key': os.getenv("OPENROUTER_API_KEY", ""),
-            'temperature': 0.1,
-            'num_retries': 3,
-        }
-        self.function_llm = LLM(
-            model='openrouter/deepseek/deepseek-r1-0528',
-            **function_llm_config
+        # Structured output LLM (Gemini OpenAI-compatible endpoint)
+        self.structured_llm = OpenAICompletion(
+            model='gemini-2.5-flash',
+            base_url='https://generativelanguage.googleapis.com/v1beta/openai/',
+            api_key=os.getenv("GOOGLE_API_KEY", ""),
+            temperature=0.1,
         )
 
     @before_kickoff
@@ -182,9 +170,9 @@ class XhsSeoOptimizerCrewOwnedNote:
 
     @agent
     def owned_note_auditor(self) -> Agent:
-        """自营笔记审计员 agent.
+        """自营笔记审计员 agent (for free-form analysis tasks).
 
-        The agent that provides objective content understanding of owned notes.
+        Uses OpenRouter LLM for free-form text output.
         Uses NLP and Vision tools to extract features and analyze feature attribution.
         Does not make strength/weakness judgments (requires GapFinder).
         """
@@ -195,9 +183,22 @@ class XhsSeoOptimizerCrewOwnedNote:
                 NLPAnalysisTool()
                 # Note: No DataAggregatorTool - we analyze a single note, not statistics
             ],
-            llm=self.custom_llm,
-            function_calling_llm=self.function_llm,
+            llm=self.general_llm,
+            function_calling_llm=self.general_llm,
             verbose=True
+        )
+
+    @agent
+    def report_generator(self) -> Agent:
+        """报告生成 agent (for structured output tasks).
+
+        Uses OpenAICompletion + Gemini for native structured output.
+        Specialized for tasks with response_model that require strict JSON conformance.
+        """
+        return Agent(
+            config=self.agents_config['report_generator'],
+            llm=self.structured_llm,
+            verbose=False  # Less verbose for structured output
         )
 
     @task
@@ -254,7 +255,7 @@ class XhsSeoOptimizerCrewOwnedNote:
 
     @task
     def generate_audit_report_task(self) -> Task:
-        """Task 4: 生成审计报告.
+        """Task 4: 生成审计报告 (structured output).
 
         Generates final AuditReport with objective analysis:
         - text_features, visual_features
@@ -263,20 +264,20 @@ class XhsSeoOptimizerCrewOwnedNote:
         - marketing_level, is_soft_ad, marketing_sensitivity (Phase 0001)
         - feature_summary (objective description, no judgment)
 
+        Uses report_generator agent with OpenAICompletion + response_model
+        for native structured output via Gemini OpenAI-compatible API.
+
         Depends on all previous tasks.
         """
         return Task(
             config=self.tasks_config['generate_audit_report'],
-            agent=self.owned_note_auditor(),
+            agent=self.report_generator(),  # Uses structured_llm
+            response_model=AuditReport,  # Native structured output!
             context=[
                 self.extract_content_features_task(),
                 self.extract_content_intent_task(),
                 self.extract_visual_subjects_task()
-            ],
-            output_pydantic=AuditReport,  # Final output validation
-            output_file="outputs/audit_report.json",
-            guardrails=[format_json_output],  # Extract JSON from markdown/prefix
-            guardrail_max_retries=2
+            ]
         )
 
     @crew
@@ -295,3 +296,51 @@ class XhsSeoOptimizerCrewOwnedNote:
             process=Process.sequential,  # Execute tasks in order
             verbose=True
         )
+
+    def kickoff(self, inputs: Dict[str, Any]) -> AuditReport:
+        """Execute crew and return structured output.
+
+        The generate_audit_report_task uses response_model=AuditReport with
+        OpenAICompletion + Gemini for native structured output. No post-processing needed.
+
+        Args:
+            inputs: Dict with owned_note, keyword, etc.
+
+        Returns:
+            AuditReport: Validated Pydantic model instance
+        """
+        print("\n" + "="*60)
+        print("🚀 Starting OwnedNoteAuditor crew execution...")
+        print("="*60 + "\n")
+
+        # Execute CrewAI task flow
+        # The last task (generate_audit_report_task) uses response_model for native structured output
+        crew_result = self.crew().kickoff(inputs=inputs)
+
+        # Parse the structured output from crew result
+        # When response_model is used, crew_result.raw contains JSON string
+        if crew_result.pydantic:
+            # If CrewAI already parsed it as Pydantic
+            structured_report = crew_result.pydantic
+        else:
+            # Parse from raw JSON string
+            structured_report = AuditReport.model_validate_json(crew_result.raw)
+
+        # Save report to file
+        self._save_report(structured_report)
+
+        print("\n" + "="*60)
+        print("✅ AuditReport generated successfully!")
+        print("="*60 + "\n")
+
+        return structured_report
+
+    def _save_report(self, report: AuditReport) -> None:
+        """Save AuditReport to outputs directory."""
+        os.makedirs("outputs", exist_ok=True)
+        output_path = "outputs/audit_report.json"
+
+        with open(output_path, 'w', encoding='utf-8') as f:
+            f.write(report.model_dump_json(indent=2, ensure_ascii=False))
+
+        print(f"✓ AuditReport saved to {output_path}")
